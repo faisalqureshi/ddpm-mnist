@@ -1,0 +1,55 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+.Python
+*.log
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Build artifacts
+build/
+dist/
+pip-wheel-metadata/
+
+# Type/check/test caches
+.mypy_cache/
+.pytype/
+.pyre/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+.ipython/
+.jupyter/
+
+# --- IDE/editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Optional: ignore big local data (uncomment if useful) ---
+data/
+*.csv
+*.tsv
+*.parquet
+*.h5
+*.npz
+*.npy
+*.pkl
+*.ckpt
