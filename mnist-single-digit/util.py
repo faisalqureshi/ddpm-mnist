@@ -105,17 +105,39 @@ def make_image_grid(imgs, nrow=4):
     return grid_np
 
 def show_samples_inline(grid_np, title=""):
-    plt.figure(figsize=(4,4))
-    if grid_np.shape[-1] == 1:                      # grayscale
-        plt.imshow(grid_np[...,0], cmap='gray', vmin=0, vmax=1)
+    import numpy as np
+    import matplotlib.pyplot as plt
+    try:
+        from IPython.display import clear_output, display
+        in_ipy = True
+    except Exception:
+        in_ipy = False
+        clear_output = None
+        display = None
+
+    plt.figure(figsize=(4, 4))
+
+    arr = np.asarray(grid_np)
+    if arr.ndim == 2:
+        arr = arr[..., None]
+
+    if arr.shape[-1] == 1:  # grayscale
+        plt.imshow(arr[..., 0], cmap='gray', vmin=0, vmax=1)
     else:
-        plt.imshow(grid_np, vmin=0, vmax=1)
+        plt.imshow(arr[..., :3], vmin=0, vmax=1)
+
     plt.title(title)
     plt.axis('off')
     plt.tight_layout()
-    clear_output(wait=True)                         # replace previous plot
-    display(plt.gcf())
-    plt.close()
+
+    if in_ipy and clear_output is not None:
+        clear_output(wait=True)
+        display(plt.gcf())
+        plt.close()
+    else:
+        # Fallback for non-notebook runs
+        plt.show()
+        plt.close()
 
 
 

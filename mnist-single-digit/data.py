@@ -40,8 +40,8 @@ class HF_MNIST(Dataset):
         y = int(self.labels[i]) # python int
         return x, y
     
-def make_mnist_loader(mnist_dataset, batch_size, num_workers):    
-    return DataLoader(mnist_dataset, batch_size=16, shuffle=True,  num_workers=0, pin_memory=False), len(mnist_dataset)
+def make_mnist_loader(mnist_dataset, batch_size, shuffle=True, num_workers=0, pin_memory=False):    
+    return DataLoader(mnist_dataset, batch_size=batch_size, shuffle=shuffle,  num_workers=num_workers, pin_memory=pin_memory), len(mnist_dataset)
 
 def main():
     parser = argparse.ArgumentParser("MNIST Data Loader")
