@@ -19,7 +19,6 @@ def save_checkpoint(path: Path, model, optimizer, scaler, epoch, global_step, ar
     try:
         torch.save(state, tmp)
         os.replace(tmp, path)  # atomic on POSIX
-        logging.info(f"Saved checkpoint: {path}")
     finally:
         if os.path.exists(tmp):
             try: os.remove(tmp)
@@ -54,3 +53,17 @@ def find_latest_checkpoint(ckpt_dir: Path) -> Optional[Path]:
     cands = sorted(ckpt_dir.glob("checkpoint_epoch_*.pt"))
     return cands[-1] if cands else None
 
+def save_checkpoint_and_link_latest(ckpt_dir: Path, model, optimizer, scaler, epoch, global_step, args):
+    ckpt_path = ckpt_dir / f"checkpoint_epoch_{epoch:06d}.pt"
+    latest = ckpt_dir / "latest.pt"
+
+    save_checkpoint(ckpt_path, model, optimizer, scaler, epoch, global_step, args)
+    try:
+        if latest.exists():
+            latest.unlink()
+        latest.symlink_to(ckpt_path.name)  # symlink inside same dir
+    except Exception:
+        # if symlinks not allowed, copy metadata
+        torch.save(torch.load(ckpt_path, map_location="cpu"), latest)
+
+    return ckpt_path
