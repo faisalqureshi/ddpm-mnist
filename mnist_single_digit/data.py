@@ -6,16 +6,25 @@ import os
 from pathlib import Path
 import numpy as np
 import torch
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
+from torch.utils.data import random_split, Subset, Dataset, DataLoader
 from torchvision import transforms as tvtransforms
 import datasets as ds
+
+def split_train_val(dataset, val_fraction=0.1, seed=42):
+    n = len(dataset)
+    n_val = int(round(val_fraction * n))
+    n_train = n - n_val
+    g = torch.Generator().manual_seed(seed)
+    train_ds, val_ds = random_split(dataset, [n_train, n_val], generator=g)
+    return train_ds, val_ds
 
 class HF_MNIST(Dataset):
     def __init__(self, split="train", only_digit=None, cache_dir=None):
         if cache_dir == None:
             hf_dataset = ds.load_dataset("ylecun/mnist", split=split)
         else:
+            cache_dir = Path(cache_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
             hf_dataset = ds.load_dataset("ylecun/mnist", split=split, cache_dir=cache_dir)
         imgs, labels = hf_dataset["image"], hf_dataset["label"]
         if only_digit is not None:
@@ -40,8 +49,22 @@ class HF_MNIST(Dataset):
         y = int(self.labels[i]) # python int
         return x, y
     
-def make_mnist_loader(mnist_dataset, batch_size, shuffle=True, num_workers=0, persistent_workers=False, prefetch_factor=2, multiprocessing_context="spawn", pin_memory=False):    
-    return DataLoader(mnist_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, persistent_workers=persistent_workers, prefetch_factor=prefetch_factor, multiprocessing_context=multiprocessing_context, pin_memory=pin_memory), len(mnist_dataset)
+def make_mnist_loader(mnist_dataset, batch_size, shuffle=True, num_workers=0,
+                      persistent_workers=False, prefetch_factor=2,
+                      multiprocessing_context="spawn", pin_memory=False,
+                      generator=None, worker_init_fn=None):
+    return DataLoader(
+        mnist_dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
+        multiprocessing_context=multiprocessing_context,
+        pin_memory=pin_memory,
+        generator=generator,
+        worker_init_fn=worker_init_fn
+    ), len(mnist_dataset)
 
 def main():
     parser = argparse.ArgumentParser("MNIST Data Loader")

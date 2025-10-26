@@ -44,10 +44,7 @@ def main():
 
     outdir = Path(args.outdir)
     log_dir = outdir / Path("logs") if args.logdir is None else Path(args.logdir)
-    print(log_dir)
     log_path = log_dir / "train.log"
-    print(log_path)
-    exit(0)
     train_logger = setup_component_logger("train", log_path)
     train_logger.info(f"\nLogging to {log_path}")
 

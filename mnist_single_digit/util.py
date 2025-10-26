@@ -7,11 +7,12 @@ from typing import Optional
 import torch
 import numpy as np
 from torchvision import utils as tvutils
+from pathlib import Path
 
-def set_seed(seed: int):
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+# def set_seed(seed: int):
+#     random.seed(seed)
+#     torch.manual_seed(seed)
+#     torch.cuda.manual_seed_all(seed)
 
 import os
 import torch
@@ -139,3 +140,35 @@ def show_samples_inline(grid_np, title=""):
         # Fallback for non-notebook runs
         plt.show()
         plt.close()
+
+def seed_everything(seed: int, deterministic: bool = False):
+    # If util.set_seed already seeds some of these, calling again is harmless.
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    if deterministic:
+        # For strict determinism; slower but reproducible.
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        # For CUDA matmul determinism (optional):
+        # os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+
+    return torch.Generator(device="cpu").manual_seed(seed)
+
+def seed_worker(worker_id):
+    # Ensures each dataloader worker has a distinct but reproducible RNG state.
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+def make_output_directories(outdir, exp_name):
+    outdir = Path(outdir)    
+    log_dir = outdir / "logs" / exp_name 
+    ckpt_dir = outdir / "checkpoints" / exp_name
+    sample_dir = outdir / "samples" / exp_name
+    run_dir = outdir / "runs" / exp_name
+    for d in (ckpt_dir, sample_dir, run_dir, log_dir):
+        d.mkdir(parents=True, exist_ok=True)
+    return ckpt_dir, sample_dir, run_dir, log_dir

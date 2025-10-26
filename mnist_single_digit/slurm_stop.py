@@ -5,7 +5,10 @@ _stop_event = threading.Event()
 STOP_FLAG_FILE = ".stop_soon"  # created by sbatch trap
 
 def _sig_handler(signum, frame):
-    logging.warning(f"Received signal {signum}; will stop soon.")
+    logging.warning(f"Received signal {signum}; will stop soon.  Please do not press Ctrl+C again.")
+    if _stop_event.is_set():
+        logging.warning("This is second request for stopping.  Exiting now.")
+        exit(-3)
     _stop_event.set()
 
 def install_signal_handlers():
