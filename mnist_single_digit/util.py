@@ -19,7 +19,7 @@ import torch
 from typing import Optional
 
 def get_device(logger, device_arg: Optional[str] = None) -> torch.device:
-    logger.info("=== Device availability ===")
+    logger.info("Device availability:")
 
     # ---- Probe availability ----
     cuda_ok = torch.cuda.is_available()

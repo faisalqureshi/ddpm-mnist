@@ -12,12 +12,13 @@ from util import get_device, seed_everything, seed_worker, make_output_directori
 from data import HF_MNIST, make_mnist_loader, split_train_val
 from logging_setup import setup_component_logger, log_args_rich
 from slurm_stop import install_signal_handlers, stop_requested
-from ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest
+from ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest, find_latest_experiment
 from torch.utils.data import DataLoader
 from contextlib import nullcontext
 import model
 import model_conv
 import torch.nn as nn
+import logging
 
 def build_model(model_str, device):
     if model_str == "conv":
@@ -48,7 +49,7 @@ def evaluate(net, loader, device, autocast_ctx):
     return running_loss / n_samples
 
 def main():
-    parser = argparse.ArgumentParser("DDPM MNIST trainer (SHARCNET-ready)")
+    parser = argparse.ArgumentParser("MNIST Autoencoder")
     parser.add_argument("--data-root", type=str, default=os.environ.get("SLURM_TMPDIR", "./hf_cache"))
     parser.add_argument("--model", type=str, default="mlp")
     parser.add_argument("--outdir", type=str, default=os.environ.get("SCRATCH", "./outputs"))
@@ -66,27 +67,51 @@ def main():
     parser.add_argument("--resume", type=str, default=None, help="Name of a checkpoint to resume training from.")
     parser.add_argument("--auto-resume", action="store_true", default=False, help="Resume from the most recent checkpoint.")
     parser.add_argument("--generate-images", action="store_true", default=False, help="Generate sample images at each epoch.")
+    parser.add_argument("--debug", action="store_true", default=False, help="Turn on debugging messages.")
     args = parser.parse_args()
+
+    #
+    # Resume logic
+    #
+    exp_name = None
+    resume = False
+    auto_resume = False
+    if args.resume:
+        resume_ckpt_path = Path(args.resume)
+        resume = True if resume_ckpt_path.is_file() else False
+        exp_name = resume_ckpt_path.parent.name
+    elif args.auto_resume:
+        f = find_latest_experiment(Path(args.outdir), args.model)
+        if f:
+            exp_name = f.name
+            auto_resume = True if f.is_dir() else False
+    
+    if not exp_name:    
+        exp_name = Path(
+            f"{args.model}"
+            f"-d{args.only_digit if args.only_digit is not None else 'all'}"
+            f"-bs{args.batch_size}"
+            f"-lr{args.lr:g}"
+            f"-seed{args.seed}"
+            f"-{time.strftime('%Y%m%d-%H%M%S')}"
+        )
 
     #
     # Output directories
     #
-    exp_name = Path(
-        f"{args.model}"
-        f"-d{args.only_digit if args.only_digit is not None else 'all'}"
-        f"-bs{args.batch_size}"
-        f"-lr{args.lr:g}"
-        f"-seed{args.seed}"
-        f"-{time.strftime('%Y%m%d-%H%M%S')}"
-    )
     ckpt_dir, sample_dir, run_dir, log_dir = make_output_directories(args.outdir, exp_name)
-    train_logger = setup_component_logger("train", log_dir / f"{exp_name}.log")
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    train_logger = setup_component_logger("train", log_dir / f"{exp_name}.log", level=log_level)
+    train_logger.info(f"EXPERIMENT: {exp_name}")
+    train_logger.debug(f"ckpt_dir={ckpt_dir}")
+    train_logger.debug(f"sample_dir={sample_dir}")
+    train_logger.debug(f"run_dir={run_dir}")
+    train_logger.debug(f"log_dir={log_dir}")
 
     #
     # Commandline arguments
     #
-    train_logger.info("=== Commandline args ===")
-    log_args_rich(train_logger, args)
+    log_args_rich(train_logger, args, file_only=True)
 
     #
     # Pick device, setup random seed, and install slurm handlers
@@ -98,7 +123,7 @@ def main():
     #
     # Data
     #
-    train_logger.info(f"=== Loading dataset ===")
+    train_logger.info(f"Loading dataset")
     train_logger.info(f'- Digit used: {args.only_digit}')
     train_logger.info(f"- Cache directory: {args.data_root}")
     mnist_dataset = HF_MNIST(split="train", 
@@ -127,7 +152,7 @@ def main():
         train_logger.error(f"Cannot initialize model: {args.model}.  Exiting.")
         exit(-2)
     else:
-        train_logger.info(f"Initialized model: {args.model}.")
+        train_logger.info(f"Initialized model: {args.model}")
 
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr)
 
@@ -156,12 +181,11 @@ def main():
     #
     start_epoch = 1
     global_step = 0
-    if args.resume:
-        path = Path(args.resume)
-        ep, global_step, _ = load_checkpoint(path, net, opt, scaler, map_location=device)
+    if resume:
+        ep, global_step, _ = load_checkpoint(resume_ckpt_path, net, opt, scaler, map_location=device)
         start_epoch = ep + 1
-        train_logger.info(f"[Resume] {path} (epoch={ep}, global_step={global_step})")
-    elif args.auto_resume:
+        train_logger.info(f"[Resume] {resume_ckpt_path} (epoch={ep}, global_step={global_step})")
+    elif auto_resume:
         latest = find_latest_checkpoint(ckpt_dir)
         if latest:
             ep, global_step, _ = load_checkpoint(latest, net, opt, scaler, map_location=device)
@@ -241,7 +265,7 @@ def main():
         # Aborting on slurm signal
         #
         if stop_requested(args.outdir):
-            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args)
+            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name)
             train_logger.info(f"[Checkpoint] {ckpt_path}")
             train_logger.info("Timeout")
             exit(-1)
@@ -276,7 +300,7 @@ def main():
         #
         now = time.time()
         if (epoch % args.ckpt_save_every == 0 or now - last_ckpt_time >= args.ckpt_every_sec):
-            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args)
+            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name)
             train_logger.info(f"[Checkpoint] {ckpt_path}")
             last_ckpt_time = now
             last_ckpt_epoch = epoch
@@ -287,7 +311,7 @@ def main():
         if val_loss < best_val:
             best_val = val_loss
             if last_ckpt_epoch != epoch:
-                best_ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args)
+                best_ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name)
                 train_logger.info(f"[Checkpoint] {best_ckpt_path}")
                 last_ckpt_epoch = epoch
             else:
@@ -310,7 +334,7 @@ def main():
     # Saving checkpoint
     #
     if last_ckpt_epoch != epoch:
-        ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args)
+        ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name)
         train_logger.info(f"[Checkpoint] {ckpt_path}")
 
     #
