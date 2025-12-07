@@ -5,16 +5,21 @@
 import os, argparse, time, random, signal
 from pathlib import Path
 from typing import Optional
+import sys
+
+# Add parent directory to path for common utilities
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import torch
 import torch.nn.functional as F
 from torchvision import utils as tvutils
 from torch.utils.tensorboard import SummaryWriter
 from model import Denoiser, precompute_schedules, q_sample, generate_images
-from util import set_seed, get_device
-from data import HF_MNIST, make_mnist_loader
-from logging_setup import setup_component_logger, log_args_rich
-from slurm_stop import install_signal_handlers, stop_requested
-from ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest
+from common.device import seed_everything, get_device
+from common.data import HF_MNIST, make_mnist_loader
+from common.logging import setup_component_logger, log_args_rich
+from common.slurm import install_signal_handlers, stop_requested
+from common.ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest
 
 def main():
     parser = argparse.ArgumentParser("DDPM MNIST trainer (SHARCNET-ready)")
@@ -52,7 +57,7 @@ def main():
     log_args_rich(train_logger, args)
 
     device = get_device(train_logger, args.device)
-    set_seed(args.seed)
+    seed_everything(args.seed)
     torch.backends.cudnn.benchmark = True
 
     train_logger.info("=== Output folders ===")
@@ -163,7 +168,7 @@ def main():
 
         # Cooperative stop check
         if stop_requested(outdir):
-            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args)
+            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, "single-digit")
             train_logger.info(f"[Checkpoint] {ckpt_path}")
             train_logger.info("Timeout")
             exit(-1)
@@ -171,7 +176,7 @@ def main():
         # Save checkpoint
         now = time.time()
         if (epoch % args.ckpt_save_every == 0 or now - last_ckpt_time >= args.ckpt_every_sec):
-            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args)
+            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, "single-digit")
             train_logger.info(f"[Checkpoint] {ckpt_path}")
             last_ckpt_time = now
             last_ckpt_epoch = epoch
@@ -183,7 +188,7 @@ def main():
     tvutils.save_image(grid, sample_dir / f"sample_epoch_{epoch:06d}_final.png")
 
     if last_ckpt_epoch != epoch:
-        ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args)
+        ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, "single-digit")
         train_logger.info(f"[Checkpoint] {ckpt_path}")
 
     train_logger.info(f"Done")

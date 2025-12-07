@@ -1,6 +1,6 @@
 from pathlib import Path
 import sys
-sys.path.append(str(Path.cwd() / "../mnist_single_digit" ))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import os, argparse, time, random, signal
 from typing import Optional
@@ -8,11 +8,11 @@ import torch
 import torch.nn.functional as F
 from torchvision import utils as tvutils
 from torch.utils.tensorboard import SummaryWriter
-from util import get_device, seed_everything, seed_worker, make_output_directories
-from data import HF_MNIST, make_mnist_loader, split_train_val
-from logging_setup import setup_component_logger, log_args_rich
-from slurm_stop import install_signal_handlers, stop_requested
-from ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest, find_latest_experiment
+from common.device import get_device, seed_everything, seed_worker, make_output_directories
+from common.data import HF_MNIST, make_mnist_loader, split_train_val
+from common.logging import setup_component_logger, log_args_rich
+from common.slurm import install_signal_handlers, stop_requested
+from common.ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest, find_latest_experiment
 from torch.utils.data import DataLoader
 from contextlib import nullcontext
 import model
@@ -35,15 +35,15 @@ def build_model(model_str, device):
 def evaluate(net, loader, device, autocast_ctx):
     net.eval()
     n_samples = 0
-    running_loss = 0.0 
+    running_loss = 0.0
     for x, _ in loader:
         x = x.to(device, dtype=torch.float32)
         B = x.size(0)
-        
+
         with autocast_ctx:
             x_hat, _ = net(x)
-            loss = F.mse_loss(x_hat, x)  # sum to average later
-        
+            loss = F.binary_cross_entropy(x_hat, x)  # BCE for Sigmoid output
+
         n_samples += B
         running_loss += loss.item() * B
     return running_loss / n_samples
@@ -59,6 +59,9 @@ def main():
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", "1")))
     parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--lr-scheduler", type=str, default="cosine", choices=["none", "cosine", "step"])
+    parser.add_argument("--early-stopping-patience", type=int, default=None, help="Early stopping patience (epochs)")
+    parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--amp", action="store_true")
@@ -156,6 +159,14 @@ def main():
 
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr)
 
+    # Learning rate scheduler
+    if args.lr_scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
+    elif args.lr_scheduler == "step":
+        scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=args.epochs // 3, gamma=0.1)
+    else:
+        scheduler = None
+
     use_amp = bool(args.amp and device in ("cuda", "mps", "cpu"))
     amp_dtype = torch.float16 if device in ("cuda", "mps") else torch.bfloat16
     autocast_ctx = (
@@ -226,6 +237,8 @@ def main():
     last_ckpt_epoch = None
     best_val = float("inf")
     best_ckpt_path = None
+    epochs_without_improvement = 0
+
     for epoch in range(start_epoch, args.epochs + 1):
         epoch_start = time.time()
 
@@ -235,23 +248,35 @@ def main():
         net.train()
         n_samples = 0
         running_loss = 0.0
+        latent_means = []
+        latent_stds = []
+
         for x, _ in train_loader:
             x = x.to(device, dtype=torch.float32)
             B = x.size(0)
 
             with autocast_ctx:
-                x_hat, _ = net(x)
-                loss = F.mse_loss(x_hat, x)
+                x_hat, z = net(x)
+                loss = F.binary_cross_entropy(x_hat, x)  # BCE for Sigmoid output
+
+            # Collect latent statistics
+            latent_means.append(z.mean().item())
+            latent_stds.append(z.std().item())
 
             opt.zero_grad(set_to_none=True)
             if use_amp:
                 scaler.scale(loss).backward()
+                if args.grad_clip > 0:
+                    scaler.unscale_(opt)
+                    torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=args.grad_clip)
                 scaler.step(opt)
                 scaler.update()
             else:
                 loss.backward()
+                if args.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=args.grad_clip)
                 opt.step()
- 
+
             n_samples += B
             running_loss += loss.item() * B
             global_step += 1
@@ -295,6 +320,16 @@ def main():
             global_step=epoch
         )
 
+        # Log latent statistics
+        avg_latent_mean = sum(latent_means) / len(latent_means)
+        avg_latent_std = sum(latent_stds) / len(latent_stds)
+        writer.add_scalar("latent/mean", avg_latent_mean, global_step=epoch)
+        writer.add_scalar("latent/std", avg_latent_std, global_step=epoch)
+
+        # Log learning rate
+        current_lr = opt.param_groups[0]['lr']
+        writer.add_scalar("train/lr", current_lr, global_step=epoch)
+
         #
         # Checkpointing
         #
@@ -310,12 +345,21 @@ def main():
         #
         if val_loss < best_val:
             best_val = val_loss
+            epochs_without_improvement = 0
             if last_ckpt_epoch != epoch:
                 best_ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name)
                 train_logger.info(f"[Checkpoint] {best_ckpt_path}")
                 last_ckpt_epoch = epoch
             else:
                 best_ckpt_path = ckpt_path
+        else:
+            epochs_without_improvement += 1
+
+        #
+        # Learning rate scheduler step
+        #
+        if scheduler is not None:
+            scheduler.step()
 
         #
         # Logging each epoch
@@ -323,8 +367,16 @@ def main():
         elapsed = time.time() - epoch_start
         train_logger.info(f"[Epoch {epoch}/{args.epochs}] "
                           f"train_loss={epoch_loss:.6f} val_loss={val_loss:.6f} "
+                          f"lr={current_lr:.2e} "
                           f"elapsed={elapsed:.1f}s "
                           f"(best_val_loss={best_val:.6f} best={best_ckpt_path})")
+
+        #
+        # Early stopping check
+        #
+        if args.early_stopping_patience is not None and epochs_without_improvement >= args.early_stopping_patience:
+            train_logger.info(f"Early stopping triggered after {epochs_without_improvement} epochs without improvement")
+            break
 
     #
     # Epochs - done
@@ -342,8 +394,8 @@ def main():
     #
     writer.add_hparams(
         {'model': args.model, 'digit': str(args.only_digit), 'bs': args.batch_size,
-        'lr': args.lr, 'seed': args.seed, 'amp': int(args.amp)},
-        {'hparams/best_val_loss': val_loss}  # or your tracked best
+        'lr': args.lr, 'lr_scheduler': args.lr_scheduler, 'seed': args.seed, 'amp': int(args.amp)},
+        {'hparams/best_val_loss': best_val}  # Fixed: use best_val instead of val_loss
     )
     writer.flush()
     writer.close()
