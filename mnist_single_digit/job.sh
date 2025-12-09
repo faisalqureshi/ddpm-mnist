@@ -19,7 +19,7 @@ DATA_ROOT="/home/fqureshi/scratch/hf_cache"
 OUTDIR="/home/fqureshi/scratch/ddpm-output"
 
 python train.py \
-  --data-root="$DATA_ROOT" \
+  --cache-dir="$DATA_ROOT" \
   --outdir="$OUTDIR" \
   --epochs=1002 \
   --auto-resume \

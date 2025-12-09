@@ -23,7 +23,8 @@ from common.ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint
 
 def main():
     parser = argparse.ArgumentParser("DDPM MNIST trainer (SHARCNET-ready)")
-    parser.add_argument("--data-root", type=str, default=os.environ.get("SLURM_TMPDIR", "./hf_cache"))
+    parser.add_argument("--cache-dir", type=str, default=os.environ.get("SLURM_TMPDIR", "./hf_cache"),
+                        help="HuggingFace cache directory")
     parser.add_argument("--outdir", type=str, default=os.environ.get("SCRATCH", "./outputs"))
     parser.add_argument("--logdir", type=str, default=None)
     parser.add_argument("--only-digit", type=int, default=5, help="-1 to use all digits")
@@ -72,12 +73,12 @@ def main():
 
     # Data
     train_logger.info(f"=== Loading dataset ===")
-    cache_dir = Path(args.data_root)
+    cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     only_digit = None if args.only_digit == -1 else args.only_digit
     train_logger.info(f'- Digit used: {only_digit}')
-    mnist_dataset = HF_MNIST(split="train", only_digit=only_digit, cache_dir=args.data_root)
-    train_logger.info(f"- Dataset cache directory: {args.data_root}")
+    mnist_dataset = HF_MNIST(split="train", only_digit=only_digit, cache_dir=args.cache_dir)
+    train_logger.info(f"- Dataset cache directory: {args.cache_dir}")
     mnist_loader, n_train = make_mnist_loader(mnist_dataset=mnist_dataset, batch_size=args.batch_size, num_workers=args.num_workers)
     train_logger.info(f"- Dataset ready (images: {len(mnist_dataset)})")
 

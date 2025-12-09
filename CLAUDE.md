@@ -13,8 +13,9 @@ The repository is organized into independent experiment directories that share c
 - **`common/`** - Shared utilities (checkpoint management, data loading, device setup, logging, SLURM support)
 - **`mnist_single_digit/`** - Pixel-space DDPM with U-Net architecture
 - **`mnist_ae/`** - MLP and Convolutional autoencoders for latent diffusion
-- **`mnist_latent_diffusion_mlp/`** - Latent diffusion using MLP autoencoder (16D latent space)
-- **`mnist_latent_diffusion_conv/`** - Latent diffusion using Convolutional autoencoder (16D latent space)
+- **`mnist_latent_diffusion/`** - **[RECOMMENDED]** Unified latent diffusion (automatically detects and works with both MLP and Conv autoencoders)
+- **`mnist_latent_diffusion_mlp/`** - Legacy: MLP-specific latent diffusion (use `mnist_latent_diffusion/` instead)
+- **`mnist_latent_diffusion_conv/`** - Legacy: Conv-specific latent diffusion (use `mnist_latent_diffusion/` instead)
 
 ### Import Pattern
 
@@ -52,6 +53,8 @@ python train.py \
 
 ### Autoencoder Training (mnist_ae)
 
+**IMPORTANT**: The `--model` flag is **required** and must be either `mlp` or `conv`.
+
 MLP autoencoder:
 ```bash
 cd mnist_ae
@@ -64,24 +67,30 @@ cd mnist_ae
 python train.py --model conv --epochs 100 --generate-images
 ```
 
+The `--model` flag determines:
+- Which architecture to use (MLP vs Convolutional)
+- Experiment naming (used in checkpoint/sample directory names)
+- Checkpoint metadata (stored in checkpoint file for auto-detection)
+
 ### Latent Diffusion Training
 
-MLP version:
+The unified implementation automatically detects whether to use MLP or Conv autoencoder from the checkpoint:
+
 ```bash
-cd mnist_latent_diffusion_mlp
+cd mnist_latent_diffusion
 python train.py \
-    --ae-ckpt /path/to/mlp-autoencoder/checkpoint_epoch_000025.pt \
+    --ae-ckpt /path/to/autoencoder/checkpoint.pt \
     --epochs 30 \
     --T 1000 \
     --batch-size 128 \
     --generate-images
 ```
 
-Conv version:
+The script automatically detects the autoencoder type (mlp or conv) from the checkpoint metadata. You can also let it auto-select the latest autoencoder:
+
 ```bash
-cd mnist_latent_diffusion_conv
+cd mnist_latent_diffusion
 python train.py \
-    --ae-ckpt /path/to/conv-autoencoder/checkpoint_epoch_000100.pt \
     --epochs 30 \
     --T 1000 \
     --batch-size 128 \
@@ -90,17 +99,55 @@ python train.py \
 
 ### Image Generation (Inference)
 
+Pixel-space diffusion:
 ```bash
-# Pixel-space diffusion
 cd mnist_single_digit
-python infer.py --ckpt /path/to/checkpoint.pt --num-images 64
+python infer.py \
+    --checkpoint /path/to/checkpoint.pt \
+    --out samples.png \
+    --n 64
+```
 
-# Latent diffusion
-cd mnist_latent_diffusion_mlp
+Latent diffusion (automatically detects autoencoder type):
+```bash
+cd mnist_latent_diffusion
 python infer.py \
     --ckpt /path/to/diffusion/checkpoint.pt \
     --ae-ckpt /path/to/autoencoder/checkpoint.pt \
-    --num-images 64
+    --num-images 64 \
+    --output generated.png
+```
+
+**Note**: Inference scripts extract all necessary parameters (T, beta_start, beta_end, latent_dim, hidden_dim) from checkpoint metadata, so you don't need to specify them manually.
+
+### Utility Scripts
+
+**Latent Space Visualization** (mnist_ae/run_tsne.py):
+
+Visualizes autoencoder latent space using t-SNE dimensionality reduction:
+
+```bash
+cd mnist_ae
+python run_tsne.py \
+    --checkpoint /path/to/autoencoder/checkpoint.pt \
+    --output tsne_plot.png \
+    --n-samples 5000
+```
+
+The script:
+- Automatically detects autoencoder type (MLP or Conv) from checkpoint
+- Encodes MNIST images to latent space
+- Applies t-SNE to reduce from 16D to 2D
+- Colors points by digit class
+- Computes clustering metrics (silhouette score, Calinski-Harabasz score)
+
+**Checkpoint Inspection** (mnist_ae/inspect_ckpt.py):
+
+Inspect contents of a checkpoint file:
+
+```bash
+cd mnist_ae
+python inspect_ckpt.py /path/to/checkpoint.pt
 ```
 
 ## Key Architectural Patterns
@@ -159,12 +206,35 @@ Latent diffusion requires pretrained autoencoder:
    - Iteratively denoise T steps → z₀
    - Decoder (frozen) maps z₀ → image
 
-**Important**: Latent diffusion imports autoencoder using `importlib.util` to avoid path conflicts:
+**Important**: Latent diffusion imports autoencoder modules using `importlib.util` to avoid path conflicts:
 ```python
-spec = importlib.util.spec_from_file_location("ae_module", str(Path(__file__).parent / "../mnist_ae/model.py"))
-ae_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(ae_module)
+# Import both MLP and Conv autoencoder modules
+spec_mlp = importlib.util.spec_from_file_location("ae_module_mlp",
+                                                    str(Path(__file__).parent / "../mnist_ae/model.py"))
+ae_module_mlp = importlib.util.module_from_spec(spec_mlp)
+spec_mlp.loader.exec_module(ae_module_mlp)
+
+spec_conv = importlib.util.spec_from_file_location("ae_module_conv",
+                                                     str(Path(__file__).parent / "../mnist_ae/model_conv.py"))
+ae_module_conv = importlib.util.module_from_spec(spec_conv)
+spec_conv.loader.exec_module(ae_module_conv)
 ```
+
+The correct module is selected at runtime by reading the `model` field from the autoencoder checkpoint:
+```python
+# Load checkpoint and detect type
+ckpt = torch.load(ae_ckpt_path, map_location="cpu", weights_only=False)
+model_type = ckpt["args"]["model"]  # "mlp" or "conv"
+
+# Select appropriate module
+ae_module = ae_module_conv if model_type == "conv" else ae_module_mlp
+ae = ae_module.Autoencoder(latent_dim=latent_dim, use_sigmoid=True).to(device)
+```
+
+This pattern is used in:
+- `mnist_latent_diffusion/train.py` - Training latent diffusion
+- `mnist_latent_diffusion/infer.py` - Generating images
+- `mnist_ae/run_tsne.py` - Visualizing latent space
 
 ## SLURM Environment
 
@@ -207,7 +277,7 @@ See `mnist_single_digit/job.sh`:
 module load python/3.12 python-build-bundle/2024a scipy-stack/2025a opencv/4.12.0 arrow/21.0.0
 source "$HOME/venv/ddpm/bin/activate"
 
-python train.py --data-root="$SLURM_TMPDIR" --outdir="$SCRATCH/ddpm-output" --epochs=100 --auto-resume --amp
+python train.py --cache-dir="$SLURM_TMPDIR" --outdir="$SCRATCH/ddpm-output" --epochs=100 --auto-resume --amp
 ```
 
 ## Output Directory Structure
@@ -259,15 +329,19 @@ $SCRATCH/  (or ./outputs/)
 - `install_signal_handlers()` - Handle SLURM timeout signals
 - `stop_requested()` - Check if graceful stop was requested
 
-## Common Training Arguments
+## Command-Line Arguments Reference
 
-All training scripts support these arguments:
+### Common Training Arguments
 
-- `--data-root` - HuggingFace cache dir (default: `$SLURM_TMPDIR` or `./hf_cache`)
+Arguments supported by most/all training scripts:
+
+- `--cache-dir` - HuggingFace cache directory (default: `$SLURM_TMPDIR` or `./hf_cache`)
 - `--outdir` - Output directory (default: `$SCRATCH` or `./outputs`)
+- `--logdir` - Log directory (default: `{outdir}/logs`)
 - `--only-digit` - Train on single digit (0-9, or None for all digits)
 - `--epochs` - Number of training epochs
 - `--batch-size` - Batch size (default: 128)
+- `--num-workers` - DataLoader workers (default: `$SLURM_CPUS_PER_TASK` or 1/4)
 - `--lr` - Learning rate (default: 2e-4)
 - `--seed` - Random seed (default: 42)
 - `--device` - Force device (cuda/mps/cpu, or None for auto-detect)
@@ -277,16 +351,46 @@ All training scripts support these arguments:
 - `--generate-images` - Generate sample images each epoch
 - `--ckpt-every-sec` - Auto-checkpoint interval in seconds (default: 300)
 - `--ckpt-save-every` - Save checkpoint every N epochs (default: 1)
+- `--debug` - Enable debug-level logging
 
-Diffusion-specific:
+### Autoencoder-Specific Arguments (mnist_ae/train.py)
+
+- `--model` - **REQUIRED**: `mlp` or `conv` (chooses architecture)
+- `--latent-dim` - Latent dimension (default: 16)
+- `--lr-scheduler` - Learning rate scheduler: `none`, `cosine`, or `step` (default: cosine)
+- `--early-stopping-patience` - Early stopping patience in epochs (default: None)
+- `--grad-clip` - Gradient clipping max norm (default: 1.0, 0 to disable)
+
+### Diffusion-Specific Arguments (mnist_single_digit/train.py, mnist_latent_diffusion/train.py)
+
 - `--T` - Number of diffusion timesteps (default: 1000)
 - `--beta-start` - Noise schedule start (default: 1e-4)
 - `--beta-end` - Noise schedule end (default: 2e-2)
+- `--samples-per-epoch` - Images to generate per epoch (default: 16)
 
-Latent diffusion-specific:
-- `--ae-ckpt` - Path to pretrained autoencoder checkpoint (required)
-- `--latent-dim` - Latent dimension (default: 16)
+### Latent Diffusion-Specific Arguments (mnist_latent_diffusion/train.py)
+
+- `--ae-ckpt` - Path to pretrained autoencoder checkpoint
+- `--ae-ckpt-dir` - Directory with autoencoder checkpoints (uses latest if `--ae-ckpt` not provided)
 - `--hidden-dim` - Denoiser hidden dimension (default: 256)
+- `--early-stopping-patience` - Early stopping patience in epochs (default: None)
+
+**Note**: If neither `--ae-ckpt` nor `--ae-ckpt-dir` is provided, the script attempts to auto-find the latest autoencoder checkpoint (tries Conv first, then MLP).
+
+### Inference Arguments
+
+**Pixel-space diffusion** (mnist_single_digit/infer.py):
+- `--checkpoint` - **REQUIRED**: Path to diffusion model checkpoint
+- `--out` - Output image path (default: `samples_infer.png`)
+- `--n` - Number of images to generate (default: 16)
+- `--device` - Force device (cuda/mps/cpu, or None for auto-detect)
+
+**Latent diffusion** (mnist_latent_diffusion/infer.py):
+- `--ckpt` - **REQUIRED**: Path to diffusion model checkpoint
+- `--ae-ckpt` - **REQUIRED**: Path to autoencoder checkpoint
+- `--num-images` - Number of images to generate (default: 64)
+- `--output` - Output image path (default: `generated.png`)
+- `--device` - Force device (cuda/mps/cpu, or None for auto-detect)
 
 ## Development Notes
 

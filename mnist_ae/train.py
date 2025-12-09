@@ -20,11 +20,11 @@ import model_conv
 import torch.nn as nn
 import logging
 
-def build_model(model_str, device):
+def build_model(model_str, latent_dim, device):
     if model_str == "conv":
-        net = model_conv.Autoencoder().to(device)
+        net = model_conv.Autoencoder(latent_dim = latent_dim).to(device)
     elif model_str == "mlp":
-        net = model.Autoencoder().to(device)
+        net = model.Autoencoder(latent_dim = latent_dim).to(device)
     else:
         return None
 
@@ -50,13 +50,15 @@ def evaluate(net, loader, device, autocast_ctx):
 
 def main():
     parser = argparse.ArgumentParser("MNIST Autoencoder")
-    parser.add_argument("--data-root", type=str, default=os.environ.get("SLURM_TMPDIR", "./hf_cache"))
-    parser.add_argument("--model", type=str, default="mlp")
+    parser.add_argument("--cache-dir", type=str, default=os.environ.get("SLURM_TMPDIR", "./hf_cache"),
+                        help="HuggingFace cache directory")
+    parser.add_argument("--model", type=str, default="mlp", help="'mlp' or 'conv'")
     parser.add_argument("--outdir", type=str, default=os.environ.get("SCRATCH", "./outputs"))
     parser.add_argument("--logdir", type=str, default=None)
     parser.add_argument("--only-digit", type=int, default=None, help="Use only this digit")
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
     parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--latent-dim", type=int, default=16)
     parser.add_argument("--num-workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", "1")))
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--lr-scheduler", type=str, default="cosine", choices=["none", "cosine", "step"])
@@ -95,6 +97,7 @@ def main():
             f"-d{args.only_digit if args.only_digit is not None else 'all'}"
             f"-bs{args.batch_size}"
             f"-lr{args.lr:g}"
+            f"-D{args.latent_dim}"
             f"-seed{args.seed}"
             f"-{time.strftime('%Y%m%d-%H%M%S')}"
         )
@@ -128,10 +131,10 @@ def main():
     #
     train_logger.info(f"Loading dataset")
     train_logger.info(f'- Digit used: {args.only_digit}')
-    train_logger.info(f"- Cache directory: {args.data_root}")
-    mnist_dataset = HF_MNIST(split="train", 
-                             only_digit=args.only_digit, 
-                             cache_dir=args.data_root)
+    train_logger.info(f"- Cache directory: {args.cache_dir}")
+    mnist_dataset = HF_MNIST(split="train",
+                             only_digit=args.only_digit,
+                             cache_dir=args.cache_dir)
     train_ds, val_ds = split_train_val(mnist_dataset, 
                                        val_fraction=0.1, 
                                        seed=args.seed)
@@ -150,7 +153,7 @@ def main():
     #
     # Model, optimizer and compute settings
     #
-    net = build_model(args.model, device)
+    net = build_model(args.model, args.latent_dim, device)
     if not net:
         train_logger.error(f"Cannot initialize model: {args.model}.  Exiting.")
         exit(-2)

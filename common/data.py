@@ -53,17 +53,25 @@ def make_mnist_loader(mnist_dataset, batch_size, shuffle=True, num_workers=0,
                       persistent_workers=False, prefetch_factor=2,
                       multiprocessing_context="spawn", pin_memory=False,
                       generator=None, worker_init_fn=None):
+    # prefetch_factor requires num_workers > 0
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = persistent_workers
+        loader_kwargs["prefetch_factor"] = prefetch_factor
+        loader_kwargs["multiprocessing_context"] = multiprocessing_context
+        if worker_init_fn is not None:
+            loader_kwargs["worker_init_fn"] = worker_init_fn
+    if generator is not None:
+        loader_kwargs["generator"] = generator
+
     return DataLoader(
         mnist_dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        persistent_workers=persistent_workers,
-        prefetch_factor=prefetch_factor,
-        multiprocessing_context=multiprocessing_context,
-        pin_memory=pin_memory,
-        generator=generator,
-        worker_init_fn=worker_init_fn
+        **loader_kwargs
     ), len(mnist_dataset)
 
 def main():
