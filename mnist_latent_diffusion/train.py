@@ -66,7 +66,10 @@ def get_ae_information_from_checkpoint(resume_ckpt_path: Path):
             ae_model_type = ckpt["args"].ae_model
             ae_only_digit = ckpt["args"].ae_only_digit
 
-        ae_ckpt_data = torch.load(ae_ckpt, map_location="cpu", weights_only=False)
+        ae_model_type2, ae_latent_dim2, ae_only_digit2, ae_ckpt_data = infer_latent_dim_from_checkpoint(ae_ckpt)
+        if ae_model_type != ae_model_type2 or ae_latent_dim != ae_latent_dim2 or ae_only_digit != ae_only_digit2:
+            print(f"{emoji_error} Information in AE checkpoint {ae_ckpt} does not match with information stored in checkpoint: {resume_ckpt_path}") 
+            exit(error_codes.MODEL_MISMATCH)
 
         return ae_model_type, ae_latent_dim, ae_only_digit, ae_ckpt, ae_ckpt_data
     except:
@@ -163,9 +166,18 @@ def main():
         print(f"{emoji.info} AE model latent dim: {args.ae_latent_dim}")
         print(f"{emoji.info} AE model only digit: {args.ae_only_digit}")
     else:
+        args.ae_model, args.ae_latent_dim, args.ae_only_digit, ae_ckpt_from_resume_ckpt, ae_ckpt_data_from_resume_ckpt = get_ae_information_from_checkpoint(resume_ckpt_path)
         if args.ae_ckpt:
-            print(f"{emoji.warning} AE checkpoint is ignored when resume or auto-resume: {args.ae_ckpt}")
-        args.ae_model, args.ae_latent_dim, args.ae_only_digit, args.ae_ckpt, ae_ckpt_data = get_ae_information_from_checkpoint(resume_ckpt_path)
+            print(f"{emoji.warning} AE checkpoint loaded from {resume_ckpt_path} is ignored: {ae_ckpt_from_resume_ckpt}")
+            
+            ae_model_type2, ae_latent_dim2, ae_only_digit2, ae_ckpt_data = infer_latent_dim_from_checkpoint(args.ae_ckpt)
+            if args.ae_model != ae_model_type2 or args.ae_latent_dim != ae_latent_dim2 or args.ae_only_digit != ae_only_digit2:
+                print(f"{emoji.error} Information in AE checkpoint {args.ae_ckpt} does not match with information stored in checkpoint: {resume_ckpt_path}") 
+                exit(error_codes.MODEL_MISMATCH)
+        else:
+            args.ae_ckpt = ae_ckpt_from_resume_ckpt
+            ae_ckpt_data = ae_ckpt_data_from_resume_ckpt
+        
         print(f"{emoji.info} AE ckpt: {args.ae_ckpt}")
         print(f"{emoji.info} AE model: {args.ae_model}")
         print(f"{emoji.info} AE model latent dim: {args.ae_latent_dim}")
