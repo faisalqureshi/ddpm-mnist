@@ -6,12 +6,6 @@
 from pathlib import Path
 import sys
 
-# Add paths for dependencies
-_single_digit_path = str(Path(__file__).parent / "../mnist_single_digit")
-_ae_path = str(Path(__file__).parent / "../mnist_ae")
-sys.path.insert(0, _single_digit_path)
-sys.path.insert(0, _ae_path)
-
 import argparse
 import torch
 from torchvision import utils as tvutils
@@ -31,8 +25,14 @@ spec_conv = importlib.util.spec_from_file_location("ae_module_conv",
 ae_module_conv = importlib.util.module_from_spec(spec_conv)
 spec_conv.loader.exec_module(ae_module_conv)
 
-# Import local model
-from model import LatentDenoiser, precompute_schedules, generate_images
+# Import latent diffusion model (local)
+spec_local = importlib.util.spec_from_file_location("local_model", str(Path(__file__).parent / "model.py"))
+local_model = importlib.util.module_from_spec(spec_local)
+spec_local.loader.exec_module(local_model)
+
+LatentDenoiser = local_model.LatentDenoiser
+precompute_schedules = local_model.precompute_schedules
+generate_images = local_model.generate_images
 
 def detect_ae_model_type(ae_ckpt_path: Path) -> str:
     """Detect autoencoder model type from checkpoint"""
@@ -66,6 +66,7 @@ def main():
     parser.add_argument("--ckpt", type=str, required=True, help="Diffusion model checkpoint")
     parser.add_argument("--ae-ckpt", type=str, default=None, help="Autoencoder checkpoint (auto-detected if not provided)")
     parser.add_argument("--num-images", type=int, default=64)
+    parser.add_argument("--digit", type=int, default=None, help="Generate specific digit (0-9), or None for all digits")
     parser.add_argument("--output", type=str, default="generated.png")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
@@ -123,12 +124,19 @@ def main():
     sched = precompute_schedules(T, beta_start, beta_end, device)
 
     # Generate images
-    print(f"Generating {args.num_images} images...")
+    if args.digit is not None:
+        print(f"Generating {args.num_images} images of digit {args.digit}...")
+        labels = torch.full((args.num_images,), args.digit, dtype=torch.long, device=device)
+    else:
+        print(f"Generating {args.num_images} images with mixed digits...")
+        labels = torch.arange(args.num_images, device=device) % 10
+
     with torch.no_grad():
         imgs = generate_images(
             net, decoder, sched,
             n=args.num_images,
             latent_dim=ae_latent_dim,
+            labels=labels,
             device=device
         ).cpu()
 

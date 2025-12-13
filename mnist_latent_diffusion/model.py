@@ -72,13 +72,18 @@ class LatentDenoiser(nn.Module):
     """
     MLP-based denoiser for latent space diffusion
     Operates on 16-dimensional latent vectors
+    Supports class-conditional generation (10 MNIST classes)
     """
-    def __init__(self, latent_dim: int = 16, hidden_dim: int = 256, time_dim: int = 256):
+    def __init__(self, latent_dim: int = 16, hidden_dim: int = 256, time_dim: int = 256, num_classes: int = 10):
         super().__init__()
         self.latent_dim = latent_dim
+        self.num_classes = num_classes
 
         # Time embedding
         self.time = TimeMLP(in_dim=128, hidden=256, out_dim=time_dim)
+
+        # Class embedding (for conditional generation)
+        self.class_emb = nn.Embedding(num_classes, time_dim)
 
         # Input projection
         self.in_proj = nn.Linear(latent_dim, hidden_dim)
@@ -97,14 +102,19 @@ class LatentDenoiser(nn.Module):
         self.out_norm = nn.LayerNorm(hidden_dim)
         self.out_proj = nn.Linear(hidden_dim, latent_dim)
 
-    def forward(self, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def forward(self, z: torch.Tensor, t: torch.Tensor, y: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         z: latent vector z_t (B, latent_dim)
         t: timestep (B,)
+        y: class labels (B,) - optional, for conditional generation
         Returns: predicted noise ε (B, latent_dim)
         """
         # Construct time embedding
         e = self.time(t)
+
+        # Add class conditioning if provided
+        if y is not None:
+            e = e + self.class_emb(y)
 
         # Input projection
         h = F.silu(self.in_proj(z))
@@ -156,10 +166,13 @@ def q_sample(z0: torch.Tensor, t: torch.Tensor, sched: Dict[str, torch.Tensor]):
 @torch.no_grad()
 def generate_latents(model: nn.Module, sched: Dict[str, torch.Tensor],
                      n: int = 16, latent_dim: int = 16,
+                     labels: Optional[torch.Tensor] = None,
                      device: Optional[torch.device] = None):
     """
     Generate latent vectors using the reverse diffusion process
 
+    n: number of samples to generate
+    labels: (n,) class labels for conditional generation (optional)
     Returns: (B, latent_dim) latent vectors
     """
     model.eval()
@@ -167,6 +180,10 @@ def generate_latents(model: nn.Module, sched: Dict[str, torch.Tensor],
 
     # Start from pure noise
     z = torch.randn(n, latent_dim, device=device)
+
+    # If labels not provided, generate without conditioning
+    if labels is not None:
+        labels = labels.to(device)
 
     beta = sched["beta"]
     sqrt_alpha = sched["sqrt_alpha"]
@@ -177,7 +194,7 @@ def generate_latents(model: nn.Module, sched: Dict[str, torch.Tensor],
     # Reverse diffusion
     for ti in reversed(range(T)):
         t = torch.full((n,), ti, device=device, dtype=torch.long)
-        eps_hat = model(z, t)
+        eps_hat = model(z, t, labels)  # Pass labels for conditioning
         mean = (z - (beta[ti] / (sqrt_one_minus_abar[ti] + 1e-12)) * eps_hat) / (sqrt_alpha[ti] + 1e-12)
         if ti > 0:
             z = mean + torch.sqrt(post_var[ti]) * torch.randn_like(z)
@@ -189,16 +206,18 @@ def generate_latents(model: nn.Module, sched: Dict[str, torch.Tensor],
 @torch.no_grad()
 def generate_images(model: nn.Module, decoder: nn.Module, sched: Dict[str, torch.Tensor],
                     n: int = 16, latent_dim: int = 16,
+                    labels: Optional[torch.Tensor] = None,
                     device: Optional[torch.device] = None):
     """
     Generate images by first generating latents, then decoding them
 
     model: latent diffusion model
     decoder: autoencoder decoder
+    labels: (n,) class labels for conditional generation (optional)
     Returns: (B, 1, 28, 28) images in [0, 1] range
     """
     # Generate latents
-    z = generate_latents(model, sched, n, latent_dim, device)
+    z = generate_latents(model, sched, n, latent_dim, labels, device)
 
     # Decode to images
     decoder.eval()

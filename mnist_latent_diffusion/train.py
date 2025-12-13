@@ -57,20 +57,20 @@ def get_ae_information_from_checkpoint(resume_ckpt_path: Path):
         ckpt = torch.load(resume_ckpt_path, map_location="cpu", weights_only=False)
         if isinstance(ckpt["args"], dict):
             ae_ckpt = ckpt["args"]["ae_ckpt"]
-            ae_ckpt_data = ckpt["args"]["ae_ckpt_data"]
             ae_latent_dim = ckpt["args"]["ae_latent_dim"]
             ae_model_type = ckpt["args"]["ae_model"]
             ae_only_digit = ckpt["args"]["ae_only_digit"]
         else:
             ae_ckpt = ckpt["args"].ae_ckpt
-            ae_ckpt_data = ckpt["args"].ae_ckpt_data
             ae_latent_dim = ckpt["args"].ae_latent_dim
             ae_model_type = ckpt["args"].ae_model
             ae_only_digit = ckpt["args"].ae_only_digit
-        
+
+        ae_ckpt_data = torch.load(ae_ckpt, map_location="cpu", weights_only=False)
+
         return ae_model_type, ae_latent_dim, ae_only_digit, ae_ckpt, ae_ckpt_data
     except:
-        print(f"emoji.error Cannot extract AE information from checkpoint. Exiting")
+        print(f"{emoji.error} Cannot extract AE information from checkpoint. Exiting")
         exit(error_codes.NO_AE_CHECKPOINT)
 
 def infer_latent_dim_from_checkpoint(ckpt_path: Path):
@@ -158,18 +158,18 @@ def main():
 
     if not exp_name:
         print(f"{emoji.info} Loading specified AE checkpoint: {args.ae_ckpt}") 
-        args.ae_model, args.ae_latent_dim, args.ae_only_digit, args.ae_ckpt_data = infer_latent_dim_from_checkpoint(Path(args.ae_ckpt))
+        args.ae_model, args.ae_latent_dim, args.ae_only_digit, ae_ckpt_data = infer_latent_dim_from_checkpoint(Path(args.ae_ckpt))
         print(f"{emoji.info} AE model: {args.ae_model}")
         print(f"{emoji.info} AE model latent dim: {args.ae_latent_dim}")
         print(f"{emoji.info} AE model only digit: {args.ae_only_digit}")
     else:
         if args.ae_ckpt:
             print(f"{emoji.warning} AE checkpoint is ignored when resume or auto-resume: {args.ae_ckpt}")
-        args.ae_model, args.ae_latent_dim, args.ae_only_digit, args.ae_ckpt, args.ae_ckpt_data = get_ae_information_from_checkpoint(resume_ckpt_path)
+        args.ae_model, args.ae_latent_dim, args.ae_only_digit, args.ae_ckpt, ae_ckpt_data = get_ae_information_from_checkpoint(resume_ckpt_path)
+        print(f"{emoji.info} AE ckpt: {args.ae_ckpt}")
         print(f"{emoji.info} AE model: {args.ae_model}")
         print(f"{emoji.info} AE model latent dim: {args.ae_latent_dim}")
         print(f"{emoji.info} AE model only digit: {args.ae_only_digit}")
-        print(f"{emoji.info} AE ckpt: {args.ae_ckpt}")
         
     #
     # Generate new experiment name if not resuming
@@ -238,7 +238,7 @@ def main():
 
     # Load pretrained autoencoder
     train_logger.info(f"Loading pretrained autoencoder from {args.ae_ckpt}")
-    encoder, decoder = load_autoencoder(args.ae_model, args.ae_latent_dim, args.ae_only_digit, args.ae_ckpt_data, device, train_logger)
+    encoder, decoder = load_autoencoder(args.ae_model, args.ae_latent_dim, args.ae_only_digit, ae_ckpt_data, device, train_logger)
     train_logger.info(f"- Autoencoder loaded successfully")
 
     # Model, optimizer, schedules
@@ -302,8 +302,9 @@ def main():
         net.train()
         running = 0.0
 
-        for x0, _ in mnist_loader:
+        for x0, labels in mnist_loader:
             x0 = x0.to(device, dtype=torch.float32)
+            labels = labels.to(device, dtype=torch.long)
             B = x0.size(0)
 
             # Encode to latent space
@@ -316,7 +317,7 @@ def main():
             # Forward diffusion + predict noise
             with autocast_ctx:
                 z_t, eps = q_sample(z0, t, sched)
-                eps_hat = net(z_t, t)
+                eps_hat = net(z_t, t, labels)  # Pass labels for conditional training
                 loss = F.mse_loss(eps_hat, eps)
 
             # Backward pass
@@ -344,8 +345,11 @@ def main():
         # Generate samples
         if args.generate_images:
             with torch.no_grad():
+                # Generate samples with specific labels (e.g., 2 samples per digit for 10 digits = 20 samples)
+                # Or generate samples_per_epoch samples with labels cycling through 0-9
+                samples_labels = torch.arange(args.samples_per_epoch, device=device) % 10
                 imgs = generate_images(net, decoder, sched, n=args.samples_per_epoch,
-                                       latent_dim=args.ae_latent_dim, device=device).cpu()
+                                       latent_dim=args.ae_latent_dim, labels=samples_labels, device=device).cpu()
             grid = tvutils.make_grid(imgs, nrow=int(args.samples_per_epoch ** 0.5), padding=2)
             tvutils.save_image(grid, sample_dir / f"epoch_{epoch:06d}.png")
             writer.add_image("samples/grid", grid, global_step=epoch)
