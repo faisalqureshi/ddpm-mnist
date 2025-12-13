@@ -82,7 +82,8 @@ def find_latest_checkpoint(outdir: Path, model):
 
     return None, None, None
 
-def save_checkpoint(path: Path, model, optimizer, scaler, epoch, global_step, args, exp_name):
+def save_checkpoint(path: Path, model, optimizer, scaler, epoch, global_step, args, exp_name,
+                    train_loss=None, val_loss=None):
     state = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
@@ -93,6 +94,10 @@ def save_checkpoint(path: Path, model, optimizer, scaler, epoch, global_step, ar
         "exp_name": exp_name,
         "time": time.time()
     }
+    if train_loss is not None:
+        state["train_loss"] = train_loss
+    if val_loss is not None:
+        state["val_loss"] = val_loss
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp_ckpt_", suffix=".pt")
     os.close(fd) 
@@ -158,11 +163,13 @@ def load_checkpoint(path: Path, model=None, optimizer=None, scaler=None, map_loc
         scaler.load_state_dict(ckpt["scaler"])
     return ckpt.get("epoch", 0), ckpt.get("global_step", 0), ckpt.get("args", None)
 
-def save_checkpoint_and_link_latest(ckpt_dir: Path, model, optimizer, scaler, epoch, global_step, args, exp_name):
+def save_checkpoint_and_link_latest(ckpt_dir: Path, model, optimizer, scaler, epoch, global_step, args, exp_name,
+                                    train_loss=None, val_loss=None):
     ckpt_path = ckpt_dir / f"checkpoint_epoch_{epoch:06d}.pt"
     latest = ckpt_dir / "latest.pt"
 
-    save_checkpoint(ckpt_path, model, optimizer, scaler, epoch, global_step, args, exp_name)
+    save_checkpoint(ckpt_path, model, optimizer, scaler, epoch, global_step, args, exp_name,
+                   train_loss=train_loss, val_loss=val_loss)
     try:
         if latest.exists():
             latest.unlink()

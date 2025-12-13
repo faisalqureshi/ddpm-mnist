@@ -313,11 +313,12 @@ def main():
         # Aborting on slurm signal
         #
         if stop_requested(args.outdir):
-            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name)
+            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name,
+                                                        train_loss=epoch_loss)
             train_logger.info(f"[Checkpoint] {ckpt_path}")
             train_logger.info("Timeout")
             exit(-1)
-        
+
         #
         # Validation loss
         #
@@ -358,7 +359,8 @@ def main():
         #
         now = time.time()
         if (epoch % args.ckpt_save_every == 0 or now - last_ckpt_time >= args.ckpt_every_sec):
-            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name)
+            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name,
+                                                        train_loss=epoch_loss, val_loss=val_loss)
             train_logger.info(f"[Checkpoint] {ckpt_path}")
             last_ckpt_time = now
             last_ckpt_epoch = epoch
@@ -370,7 +372,8 @@ def main():
             best_val = val_loss
             epochs_without_improvement = 0
             if last_ckpt_epoch != epoch:
-                best_ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name)
+                best_ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name,
+                                                                 train_loss=epoch_loss, val_loss=val_loss)
                 train_logger.info(f"[Checkpoint] {best_ckpt_path}")
                 last_ckpt_epoch = epoch
             else:
@@ -409,7 +412,8 @@ def main():
     # Saving checkpoint
     #
     if last_ckpt_epoch != epoch:
-        ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name)
+        ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, exp_name,
+                                                    train_loss=epoch_loss, val_loss=val_loss)
         train_logger.info(f"[Checkpoint] {ckpt_path}")
 
     #

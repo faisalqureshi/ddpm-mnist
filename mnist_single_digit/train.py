@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from model import Denoiser, precompute_schedules, q_sample, generate_images
 from common.device import seed_everything, get_device
 from common.data import HF_MNIST, make_mnist_loader
-from common.logging import setup_component_logger, log_args_rich
+from common.logger_utils import setup_component_logger, log_args_rich
 from common.slurm import install_signal_handlers, stop_requested
 from common.ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest
 
@@ -169,7 +169,8 @@ def main():
 
         # Cooperative stop check
         if stop_requested(outdir):
-            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, "single-digit")
+            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, "single-digit",
+                                                        train_loss=epoch_loss)
             train_logger.info(f"[Checkpoint] {ckpt_path}")
             train_logger.info("Timeout")
             exit(-1)
@@ -177,7 +178,8 @@ def main():
         # Save checkpoint
         now = time.time()
         if (epoch % args.ckpt_save_every == 0 or now - last_ckpt_time >= args.ckpt_every_sec):
-            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, "single-digit")
+            ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, "single-digit",
+                                                        train_loss=epoch_loss)
             train_logger.info(f"[Checkpoint] {ckpt_path}")
             last_ckpt_time = now
             last_ckpt_epoch = epoch
@@ -189,7 +191,8 @@ def main():
     tvutils.save_image(grid, sample_dir / f"sample_epoch_{epoch:06d}_final.png")
 
     if last_ckpt_epoch != epoch:
-        ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, "single-digit")
+        ckpt_path = save_checkpoint_and_link_latest(ckpt_dir, net, opt, scaler, epoch, global_step, args, "single-digit",
+                                                    train_loss=epoch_loss)
         train_logger.info(f"[Checkpoint] {ckpt_path}")
 
     train_logger.info(f"Done")
