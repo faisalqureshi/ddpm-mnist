@@ -79,33 +79,39 @@ def main():
     ckpt_args = ckpt.get("args", {})
 
     # Extract architecture parameters from checkpoint
-    latent_dim = ckpt_args.get("latent_dim", 16)
     hidden_dim = ckpt_args.get("hidden_dim", 256)
     T = ckpt_args.get("T", 1000)
     beta_start = ckpt_args.get("beta_start", 1e-4)
     beta_end = ckpt_args.get("beta_end", 2e-2)
 
-    print(f"Architecture from checkpoint: latent_dim={latent_dim}, hidden_dim={hidden_dim}, T={T}")
+    # Extract autoencoder metadata from diffusion checkpoint
+    ae_latent_dim = ckpt_args.get("ae_latent_dim", 16)
+    ae_model_type = ckpt_args.get("ae_model", None)
+
+    print(f"Architecture from checkpoint: ae_latent_dim={ae_latent_dim}, hidden_dim={hidden_dim}, T={T}")
 
     # Determine AE checkpoint path
     ae_ckpt_path = args.ae_ckpt
-    if not ae_ckpt_path and "ae_ckpt_path" in ckpt_args:
-        ae_ckpt_path = ckpt_args["ae_ckpt_path"]
+    if not ae_ckpt_path and "ae_ckpt" in ckpt_args:
+        ae_ckpt_path = ckpt_args["ae_ckpt"]
         print(f"Auto-detected autoencoder checkpoint from diffusion checkpoint: {ae_ckpt_path}")
     elif not ae_ckpt_path:
         print("Error: --ae-ckpt not provided and not found in diffusion checkpoint metadata")
         exit(-1)
 
-    # Detect autoencoder type and load decoder
-    ae_model_type = detect_ae_model_type(Path(ae_ckpt_path))
-    print(f"Detected autoencoder type: {ae_model_type}")
+    # Detect autoencoder type if not in diffusion checkpoint metadata
+    if not ae_model_type:
+        ae_model_type = detect_ae_model_type(Path(ae_ckpt_path))
+        print(f"Detected autoencoder type from AE checkpoint: {ae_model_type}")
+    else:
+        print(f"Using autoencoder type from diffusion checkpoint: {ae_model_type}")
 
     print(f"Loading autoencoder from {ae_ckpt_path}")
-    decoder = load_autoencoder(Path(ae_ckpt_path), device, latent_dim, ae_model_type)
+    decoder = load_autoencoder(Path(ae_ckpt_path), device, ae_latent_dim, ae_model_type)
 
     # Build diffusion model with checkpoint parameters
     net = LatentDenoiser(
-        latent_dim=latent_dim,
+        latent_dim=ae_latent_dim,
         hidden_dim=hidden_dim,
         time_dim=256
     ).to(device)
@@ -122,7 +128,7 @@ def main():
         imgs = generate_images(
             net, decoder, sched,
             n=args.num_images,
-            latent_dim=latent_dim,
+            latent_dim=ae_latent_dim,
             device=device
         ).cpu()
 

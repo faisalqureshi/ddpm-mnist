@@ -21,7 +21,10 @@ from common.device import get_device, seed_everything, seed_worker
 from common.data import HF_MNIST, make_mnist_loader
 from common.logger_utils import setup_component_logger, log_args_rich
 from common.slurm import install_signal_handlers, stop_requested
-from common.ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest, find_latest_autoencoder_checkpoint, resolve_resume_path_and_exp_name
+from common import error_codes
+from common import emoji
+from common.ckpt import resolve_resume_path, load_checkpoint, save_checkpoint_and_link_latest
+import logging
 
 # Import BOTH AE model modules
 import importlib.util
@@ -48,36 +51,64 @@ precompute_schedules = local_model.precompute_schedules
 q_sample = local_model.q_sample
 generate_images = local_model.generate_images
 
+def get_ae_information_from_checkpoint(resume_ckpt_path: Path):
+    try:
+        print(f"{emoji.info} Extracing AE information from checkpoint")
+        ckpt = torch.load(resume_ckpt_path, map_location="cpu", weights_only=False)
+        if isinstance(ckpt["args"], dict):
+            ae_ckpt = ckpt["args"]["ae_ckpt"]
+            ae_ckpt_data = ckpt["args"]["ae_ckpt_data"]
+            ae_latent_dim = ckpt["args"]["ae_latent_dim"]
+            ae_model_type = ckpt["args"]["ae_model"]
+            ae_only_digit = ckpt["args"]["ae_only_digit"]
+        else:
+            ae_ckpt = ckpt["args"].ae_ckpt
+            ae_ckpt_data = ckpt["args"].ae_ckpt_data
+            ae_latent_dim = ckpt["args"].ae_latent_dim
+            ae_model_type = ckpt["args"].ae_model
+            ae_only_digit = ckpt["args"].ae_only_digit
+        
+        return ae_model_type, ae_latent_dim, ae_only_digit, ae_ckpt, ae_ckpt_data
+    except:
+        print(f"emoji.error Cannot extract AE information from checkpoint. Exiting")
+        exit(error_codes.NO_AE_CHECKPOINT)
+
 def infer_latent_dim_from_checkpoint(ckpt_path: Path):
     """Infer latent_dim and model_type from autoencoder checkpoint args"""
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    try:
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
-    # Handle both dict and argparse.Namespace
-    if isinstance(ckpt["args"], dict):
-        latent_dim = ckpt["args"]["latent_dim"]
-        model_type = ckpt["args"]["model"]
-    else:
-        latent_dim = ckpt["args"].latent_dim
-        model_type = ckpt["args"].model
+        # Handle both dict and argparse.Namespace
+        if isinstance(ckpt["args"], dict):
+            latent_dim = ckpt["args"]["latent_dim"]
+            model_type = ckpt["args"]["model"]
+            only_digit = ckpt["args"]["only_digit"]
+        else:
+            latent_dim = ckpt["args"].latent_dim
+            model_type = ckpt["args"].model
+            only_digit = ckpt["args"].only_digit
 
-    return latent_dim, model_type
+        return model_type, latent_dim, only_digit, ckpt
+    except:
+        print(f"{emoji.error} Cannot load AE checkpoint: {ckpt_path}.  Exiting")
+        exit(error_codes.NO_AE_CHECKPOINT)
 
-def load_autoencoder(ckpt_path: Path, device, latent_dim: int, model_type: str, train_logger):
-    """Load pretrained autoencoder encoder and decoder based on model type"""
-
-    # Select the correct autoencoder module
-    if model_type == "ae-conv":
+def load_autoencoder(model, latent_dim, only_digit, ckpt, device, train_logger):
+    if model == "ae-conv":
         ae_module = ae_module_conv
-        train_logger.info(f"Loading Conv autoencoder (latent_dim={latent_dim})")
-    elif model_type == "ae-mlp":
+    elif model == "ae-mlp":
         ae_module = ae_module_mlp
-        train_logger.info(f"Loading MLP autoencoder (latent_dim={latent_dim})")
     else:
-        raise ValueError(f"Unknown autoencoder model type: {model_type}")
+        raise ValueError(f"Unknown autoencoder model type: {model}")
 
     ae = ae_module.Autoencoder(latent_dim=latent_dim, use_sigmoid=True).to(device)
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    ae.load_state_dict(ckpt["model"])
+    ckpt_device = {}
+    for k, v in ckpt["model"].items():
+        if isinstance(v, torch.Tensor):
+            ckpt_device[k] = v.to(device)
+        else:
+            ckpt_device[k] = v
+    ae.load_state_dict(ckpt_device)
     ae.eval()
     return ae.encoder, ae.decoder
 
@@ -88,8 +119,6 @@ def main():
     parser.add_argument("--outdir", type=str, default=os.environ.get("SCRATCH", "./outputs"))
     parser.add_argument("--logdir", type=str, default=None)
     parser.add_argument("--ae-ckpt", type=str, default=None, help="Path to pretrained autoencoder checkpoint")
-    parser.add_argument("--ae-ckpt-dir", type=str, default=None, help="Directory containing autoencoder checkpoints (will use latest)")
-    parser.add_argument("--only-digit", type=int, default=None, help="Use only this digit (None for all)")
     parser.add_argument("--epochs", type=int, default=20, help="Number of epochs")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", "1")))
@@ -111,8 +140,10 @@ def main():
     parser.add_argument("--debug", action="store_true", default=False)
     args = parser.parse_args()
 
+    args.model = "lddpm"
+
     #
-    # Setup directory
+    # Setup log dir
     #
     outdir = Path(args.outdir)
     log_dir = outdir / Path("logs") if args.logdir is None else Path(args.logdir)
@@ -121,90 +152,65 @@ def main():
     #
     # Resume logic - determine checkpoint path and experiment name
     #
-    success, resume_ckpt_path, exp_name = resolve_resume_path_and_exp_name(
-        args, outdir, exp_name_pattern="latent-diffusion-*"
-    )
-    if not success:
-        print("--resume doesn't point to a valid checkpoint file.")
-        exit(-1)
+    exp_name, resume_ckpt_path, _ = resolve_resume_path(args)
+    if args.auto_resume and not exp_name:
+        print(f"{emoji.warning} Ignoring auto-resume, training from scratch")
+
+    if not exp_name:
+        print(f"{emoji.info} Loading specified AE checkpoint: {args.ae_ckpt}") 
+        args.ae_model, args.ae_latent_dim, args.ae_only_digit, args.ae_ckpt_data = infer_latent_dim_from_checkpoint(Path(args.ae_ckpt))
+        print(f"{emoji.info} AE model: {args.ae_model}")
+        print(f"{emoji.info} AE model latent dim: {args.ae_latent_dim}")
+        print(f"{emoji.info} AE model only digit: {args.ae_only_digit}")
     else:
-        print(f"Using resume: {True if args.resume else False}")
-        print(f"Using auto-resume: {args.auto_resume}")
-        if resume_ckpt_path:
-            print(f"resume_ckpt_path = {resume_ckpt_path}")
-            print(f"exp_name = {exp_name}")
-
-    # Resolve autoencoder checkpoint path
-    # Priority: 1) Extract from resume checkpoint metadata
-    #           2) Use --ae-ckpt if provided
-    #           3) Use --ae-ckpt-dir if provided
-    #           4) Auto-detect latest autoencoder
-    ae_ckpt_path = None
-
-    # If resuming, try to extract ae_ckpt_path from checkpoint metadata
-    if resume_ckpt_path and resume_ckpt_path.exists():
-        try:
-            ckpt = torch.load(resume_ckpt_path, map_location="cpu", weights_only=False)
-            if "args" in ckpt and isinstance(ckpt["args"], dict) and "ae_ckpt_path" in ckpt["args"]:
-                ae_ckpt_path = Path(ckpt["args"]["ae_ckpt_path"])
-                print(f"Found AE checkpoint from resume checkpoint: {ae_ckpt_path}")
-        except Exception as e:
-            print(f"Warning: Could not extract ae_ckpt_path from checkpoint: {e}")
-
-    # Override with explicit --ae-ckpt if provided
-    if args.ae_ckpt:
-        ae_ckpt_path = Path(args.ae_ckpt)
-        print(f"AE checkpoint specified args.ae_ckpt: {ae_ckpt_path}")
-    elif not ae_ckpt_path:  # Only search if we didn't get it from resume checkpoint
-        if args.ae_ckpt_dir:
-            ae_ckpt_dir = Path(args.ae_ckpt_dir)
-            ae_ckpt_path = find_latest_checkpoint(ae_ckpt_dir)
-            if not ae_ckpt_path:
-                print(f"Error: No AE checkpoint found in {ae_ckpt_dir}")
-                exit(-1)
-            print(f"Auto-selected latest AE checkpoint in {ae_ckpt_dir}: {ae_ckpt_path}")
-        else:
-            # Try to find the latest autoencoder checkpoint (try ae-conv first, then ae-mlp)
-            ae_ckpt_path = find_latest_autoencoder_checkpoint(args.outdir, "ae-conv")
-            if not ae_ckpt_path:
-                ae_ckpt_path = find_latest_autoencoder_checkpoint(args.outdir, "ae-mlp")
-
-            if ae_ckpt_path:
-                print(f"Auto-selected latest AE checkpoint under {args.outdir}: {ae_ckpt_path}")
-            else:
-                print("Error: No autoencoder checkpoint specified. Use --ae-ckpt or --ae-ckpt-dir")
-                exit(-1)
-
-    # Detect AE model type and latent dim
-    latent_dim, ae_model_type = infer_latent_dim_from_checkpoint(ae_ckpt_path)
-
-    print(f"Using AE checkpoint: {ae_ckpt_path}")
-    print(latent_dim)
-    print(ae_model_type)
-    exit(0)
-
+        if args.ae_ckpt:
+            print(f"{emoji.warning} AE checkpoint is ignored when resume or auto-resume: {args.ae_ckpt}")
+        args.ae_model, args.ae_latent_dim, args.ae_only_digit, args.ae_ckpt, args.ae_ckpt_data = get_ae_information_from_checkpoint(resume_ckpt_path)
+        print(f"{emoji.info} AE model: {args.ae_model}")
+        print(f"{emoji.info} AE model latent dim: {args.ae_latent_dim}")
+        print(f"{emoji.info} AE model only digit: {args.ae_only_digit}")
+        print(f"{emoji.info} AE ckpt: {args.ae_ckpt}")
+        
+    #
     # Generate new experiment name if not resuming
+    #
     if not exp_name:
         exp_name = Path(
-            f"latent-diffusion"
-            f"-{ae_model_type}"
-            f"-D{latent_dim}"
-            f"-d{args.only_digit if args.only_digit is not None else 'all'}"
+            f"{args.model}"
+            f"-E{args.ae_model}"
+            f"-d{args.ae_only_digit if args.ae_only_digit is not None else 'all'}"
             f"-bs{args.batch_size}"
             f"-lr{args.lr:g}"
+            f"-D{args.ae_latent_dim}"
             f"-T{args.T}"
             f"-seed{args.seed}"
             f"-{time.strftime('%Y%m%d-%H%M%S')}"
         )
-    else:
-        exp_name = Path(exp_name)
-        print(f"Resuming experiment: {exp_name}")
 
-    # Setup logger
-    log_path = log_dir / f"{exp_name}.log"
-    train_logger = setup_component_logger("train", log_path)
-    train_logger.info(f"EXPERIMENT: {exp_name}")
-    train_logger.info(f"Logging to {log_path}")
+    #
+    # Output directories
+    #
+    ckpt_dir = outdir / "checkpoints" / exp_name
+    sample_dir = outdir / "samples" / exp_name
+    run_dir = outdir / "runs" / exp_name
+    for d in (ckpt_dir, sample_dir, run_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    #
+    # Setting up logger
+    #    
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    train_logger = setup_component_logger("train", log_dir / f"{exp_name}.log", level=log_level)
+    
+    #
+    # Printing some helpful information
+    #
+    train_logger.info(f"{emoji.info} EXPERIMENT: {exp_name}")
+    train_logger.info(f"{emoji.info} MODEL: {args.model}")
+    train_logger.debug(f"ckpt_dir={ckpt_dir}")
+    train_logger.debug(f"sample_dir={sample_dir}")
+    train_logger.debug(f"run_dir={run_dir}")
+    train_logger.debug(f"log_dir={log_dir}")
 
     log_args_rich(train_logger, args, file_only=True)
 
@@ -212,25 +218,14 @@ def main():
     dl_gen = seed_everything(args.seed, True)
     install_signal_handlers()
 
-    train_logger.info(f"Detected autoencoder type: {ae_model_type}")
-    train_logger.info(f"Inferred latent_dim={latent_dim} from autoencoder checkpoint")
-    train_logger.info(f"Using autoencoder checkpoint: {ae_ckpt_path}")
-
-    # Store latent_dim and ae_ckpt (checkpoint file path) in args for checkpointing
-    args.latent_dim = latent_dim
-    args.ae_ckpt_path = str(ae_ckpt_path)  # Store the actual .pt file path, not directory
-
-    # Create output directories
-    ckpt_dir = outdir / "checkpoints" / exp_name
-    sample_dir = outdir / "samples" / exp_name
-    run_dir = outdir / "runs" / exp_name
-    for d in (ckpt_dir, sample_dir, run_dir):
-        d.mkdir(parents=True, exist_ok=True)
+    train_logger.info(f"Using autoencoder checkpoint: {args.ae_ckpt}")
+    train_logger.info(f"Detected autoencoder type: {args.ae_model}")
+    train_logger.info(f"Inferred latent_dim={args.ae_latent_dim} from autoencoder checkpoint")
 
     # Load data
     train_logger.info(f"Loading dataset")
-    train_logger.info(f'- Digit used: {args.only_digit}')
-    mnist_dataset = HF_MNIST(split="train", only_digit=args.only_digit, cache_dir=args.cache_dir)
+    train_logger.info(f'- Digit used: {args.ae_only_digit}')
+    mnist_dataset = HF_MNIST(split="train", only_digit=args.ae_only_digit, cache_dir=args.cache_dir)
     train_logger.info(f"- Cache directory: {args.cache_dir}")
     mnist_loader, n_train = make_mnist_loader(
         mnist_dataset=mnist_dataset,
@@ -242,17 +237,17 @@ def main():
     train_logger.info(f"- Dataset ready (images: {len(mnist_dataset)})")
 
     # Load pretrained autoencoder
-    train_logger.info(f"Loading pretrained autoencoder from {ae_ckpt_path}")
-    encoder, decoder = load_autoencoder(ae_ckpt_path, device, latent_dim, ae_model_type, train_logger)
+    train_logger.info(f"Loading pretrained autoencoder from {args.ae_ckpt}")
+    encoder, decoder = load_autoencoder(args.ae_model, args.ae_latent_dim, args.ae_only_digit, args.ae_ckpt_data, device, train_logger)
     train_logger.info(f"- Autoencoder loaded successfully")
 
     # Model, optimizer, schedules
     net = LatentDenoiser(
-        latent_dim=args.latent_dim,
+        latent_dim=args.ae_latent_dim,
         hidden_dim=args.hidden_dim,
         time_dim=256
     ).to(device)
-    train_logger.info(f"Initialized latent denoiser (latent_dim={args.latent_dim}, hidden_dim={args.hidden_dim})")
+    train_logger.info(f"Initialized latent denoiser (latent_dim={args.ae_latent_dim}, hidden_dim={args.hidden_dim})")
 
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr)
     sched = precompute_schedules(args.T, args.beta_start, args.beta_end, device)
@@ -350,7 +345,7 @@ def main():
         if args.generate_images:
             with torch.no_grad():
                 imgs = generate_images(net, decoder, sched, n=args.samples_per_epoch,
-                                       latent_dim=args.latent_dim, device=device).cpu()
+                                       latent_dim=args.ae_latent_dim, device=device).cpu()
             grid = tvutils.make_grid(imgs, nrow=int(args.samples_per_epoch ** 0.5), padding=2)
             tvutils.save_image(grid, sample_dir / f"epoch_{epoch:06d}.png")
             writer.add_image("samples/grid", grid, global_step=epoch)
@@ -396,7 +391,7 @@ def main():
 
     # Log hyperparameters
     writer.add_hparams(
-        {'latent_dim': args.latent_dim, 'hidden_dim': args.hidden_dim,
+        {'latent_dim': args.ae_latent_dim, 'hidden_dim': args.hidden_dim,
          'T': args.T, 'bs': args.batch_size, 'lr': args.lr, 'seed': args.seed},
         {'hparams/best_loss': best_loss}
     )

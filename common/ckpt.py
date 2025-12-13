@@ -122,7 +122,7 @@ def inspect_checkpoint(ckpt_path: Path) -> None:
     if isinstance(obj, dict):
         print("Top-level keys:", list(obj.keys()))
         # Common fields people store
-        for k in ("epoch", "global_step"):
+        for k in ("exp_name", "epoch", "global_step", "time"):
             if k in obj:
                 print(f"- {k}: {obj[k]}")
         if "args" in obj:

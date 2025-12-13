@@ -26,11 +26,12 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from common.ckpt import load_checkpoint, save_checkpoint_and_link_latest
+from common.ckpt import load_checkpoint, save_checkpoint_and_link_latest, resolve_resume_path
 from common.device import get_device, seed_everything
 from common.data import HF_MNIST, make_mnist_loader
-from common.logging import setup_component_logger
+from common.logger_utils import setup_component_logger
 from common.slurm import install_signal_handlers, stop_requested
+from common import emoji, error_codes
 ```
 
 **Never use relative imports or sys.path hacks to import from sibling directories.**
@@ -168,14 +169,33 @@ The script:
 - Colors points by digit class
 - Computes clustering metrics (silhouette score, Calinski-Harabasz score)
 
-**Checkpoint Inspection** (mnist_ae/inspect_ckpt.py):
+**Checkpoint Inspection** (common/inspect_ckpt.py):
 
 Inspect contents of a checkpoint file:
 
 ```bash
-cd mnist_ae
-python inspect_ckpt.py /path/to/checkpoint.pt
+python -m common.inspect_ckpt /path/to/checkpoint.pt
 ```
+
+**Find Best Checkpoint** (common/find_best_ckpt.py):
+
+Find the best checkpoint based on metrics (val_loss, train_loss, epoch, etc.):
+
+```bash
+# Find checkpoint with lowest validation loss
+python -m common.find_best_ckpt /path/to/checkpoints --metric val_loss --mode min
+
+# Find checkpoint with highest epoch number (latest)
+python -m common.find_best_ckpt /path/to/checkpoints --metric epoch --mode max
+
+# Copy best checkpoint to a specific location
+python -m common.find_best_ckpt /path/to/checkpoints --metric val_loss --copy-to best_model.pt
+
+# Print only the path (for scripting)
+python -m common.find_best_ckpt /path/to/checkpoints --metric val_loss --print-path-only
+```
+
+The script can extract losses from log files if available, or use checkpoint metadata.
 
 The `run_tsne.py` script generates three output files in the specified output directory:
 - `tsne_latent_space.png` - All digits colored by class on a single plot
@@ -215,20 +235,25 @@ Experiment names are auto-generated with patterns specific to each model type:
 
 **Autoencoder:**
 ```
-{model}-dall-bs{batch_size}-lr{lr}-D{latent_dim}-seed{seed}-{timestamp}
+ae-{model}-d{digit}-bs{batch_size}-lr{lr}-D{latent_dim}-seed{seed}-{timestamp}
 ```
-Example: `mlp-dall-bs128-lr0.0002-D16-seed42-20251207-103045`
+Example: `ae-conv-dall-bs128-lr0.0002-D16-seed42-20251207-103045`
 
 **Latent Diffusion:**
 ```
-latent-diffusion-{ae_model}-D{latent_dim}-d{digit}-bs{batch_size}-lr{lr}-T{timesteps}-seed{seed}-{timestamp}
+lddpm-E{ae_model}-d{digit}-bs{batch_size}-lr{lr}-D{latent_dim}-T{timesteps}-seed{seed}-{timestamp}
 ```
-Example: `latent-diffusion-conv-D16-dall-bs128-lr0.0002-T1000-seed42-20251207-103045`
+Example: `lddpm-Eae-conv-dall-bs128-lr0.0002-D16-T1000-seed42-20251207-103045`
 
-The latent diffusion naming now includes:
-- **ae_model**: Type of autoencoder used (`conv` or `mlp`)
+The experiment names include:
+- **model**: `ae-conv`, `ae-mlp`, or `lddpm` (latent DDPM)
+- **ae_model**: For latent diffusion, the encoder type used (e.g., `ae-conv`)
+- **digit**: `dall` for all digits, or specific digit `0-9`
 - **latent_dim**: Dimension of the latent space (typically 16)
-- **ae_ckpt_path**: Stored in checkpoint metadata for reproducibility
+
+**Important checkpoint metadata** stored for reproducibility:
+- Autoencoder: `model` (ae-conv/ae-mlp), `latent_dim`, `only_digit`
+- Latent diffusion: `ae_model`, `ae_latent_dim`, `ae_only_digit`, `ae_ckpt`, `ae_ckpt_data`
 
 ### Time Conditioning (FiLM)
 
@@ -365,10 +390,11 @@ $SCRATCH/  (or ./outputs/)
 ### `common.ckpt`
 - `save_checkpoint()` - Atomic checkpoint save
 - `load_checkpoint()` - Load and restore state
-- `find_latest_checkpoint()` - Find latest checkpoint in directory
-- `find_latest_autoencoder_checkpoint()` - Find latest AE checkpoint by model prefix
+- `find_latest_checkpoint()` - Find latest checkpoint in directory by model prefix
+- `resolve_resume_path()` - Unified resume logic handling --resume and --auto-resume
+- `infer_model_from_checkpoint()` - Extract model type from checkpoint metadata
 - `save_checkpoint_and_link_latest()` - Save + create `latest.pt` symlink
-- `find_latest_experiment()` - Find most recent experiment directory
+- `inspect_checkpoint()` - Display checkpoint metadata and structure
 
 ### `common.device`
 - `get_device()` - Auto-detect CUDA/MPS/CPU
@@ -382,9 +408,15 @@ $SCRATCH/  (or ./outputs/)
 - `make_mnist_loader()` - Create DataLoader with proper seeding
 - `split_train_val()` - Split dataset into train/val
 
-### `common.logging`
-- `setup_component_logger()` - Create logger for component
+### `common.logger_utils`
+- `setup_component_logger()` - Create logger for component with file and console handlers
 - `log_args_rich()` - Pretty-print argparse arguments
+
+### `common.emoji`
+- UI constants for consistent visual feedback: `step`, `error`, `warning`, `ok`, `info`
+
+### `common.error_codes`
+- Standard exit codes: `MODEL_MISMATCH`, `NO_MODEL_SPECIFIED`, `NO_AE_CHECKPOINT`
 
 ### `common.slurm`
 - `install_signal_handlers()` - Handle SLURM timeout signals
