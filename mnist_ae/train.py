@@ -10,9 +10,11 @@ from torchvision import utils as tvutils
 from torch.utils.tensorboard import SummaryWriter
 from common.device import get_device, seed_everything, seed_worker, make_output_directories
 from common.data import HF_MNIST, make_mnist_loader, split_train_val
-from common.logging import setup_component_logger, log_args_rich
+from common.logger_utils import setup_component_logger, log_args_rich
 from common.slurm import install_signal_handlers, stop_requested
-from common.ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest, find_latest_experiment
+from common import error_codes
+from common import emoji
+from common.ckpt import resolve_resume_path, load_checkpoint, save_checkpoint_and_link_latest
 from torch.utils.data import DataLoader
 from contextlib import nullcontext
 import model
@@ -21,11 +23,12 @@ import torch.nn as nn
 import logging
 
 def build_model(model_str, latent_dim, device):
-    if model_str == "conv":
+    if model_str == "ae-conv":
         net = model_conv.Autoencoder(latent_dim = latent_dim).to(device)
-    elif model_str == "mlp":
+    elif model_str == "ae-mlp":
         net = model.Autoencoder(latent_dim = latent_dim).to(device)
     else:
+        print(f"{emoji.warning} Cannot build model: {model_str}")
         return None
 
     net.initialize_weights()
@@ -52,7 +55,7 @@ def main():
     parser = argparse.ArgumentParser("MNIST Autoencoder")
     parser.add_argument("--cache-dir", type=str, default=os.environ.get("SLURM_TMPDIR", "./hf_cache"),
                         help="HuggingFace cache directory")
-    parser.add_argument("--model", type=str, default="mlp", help="'mlp' or 'conv'")
+    parser.add_argument("--model", type=str, default=None, help="'ae-mlp' or 'ae-conv'")
     parser.add_argument("--outdir", type=str, default=os.environ.get("SCRATCH", "./outputs"))
     parser.add_argument("--logdir", type=str, default=None)
     parser.add_argument("--only-digit", type=int, default=None, help="Use only this digit")
@@ -76,22 +79,27 @@ def main():
     args = parser.parse_args()
 
     #
-    # Resume logic
+    # Setup log dir
     #
-    exp_name = None
-    resume = False
-    auto_resume = False
-    if args.resume:
-        resume_ckpt_path = Path(args.resume)
-        resume = True if resume_ckpt_path.is_file() else False
-        exp_name = resume_ckpt_path.parent.name
-    elif args.auto_resume:
-        f = find_latest_experiment(Path(args.outdir), args.model)
-        if f:
-            exp_name = f.name
-            auto_resume = True if f.is_dir() else False
-    
-    if not exp_name:    
+    outdir = Path(args.outdir)
+    log_dir = outdir / Path("logs") if args.logdir is None else Path(args.logdir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    #
+    # Resume logic - determine checkpoint path and experiment name
+    #
+    exp_name, resume_ckpt_path, _ = resolve_resume_path(args)
+    if args.auto_resume and not exp_name:
+        print(f"{emoji.warning} Ignoring auto-resume, training from scratch" ) 
+
+    #
+    # Generate new experiment name if not resuming
+    #
+    if not exp_name:
+        if not args.model in ["ae-mlp", "ae-conv"]:
+            print(f"{emoji.error} Unrecognized model: {args.model}.  Exiting")
+            exit(error_codes.NO_MODEL_SPECIFIED)
+
         exp_name = Path(
             f"{args.model}"
             f"-d{args.only_digit if args.only_digit is not None else 'all'}"
@@ -105,10 +113,23 @@ def main():
     #
     # Output directories
     #
-    ckpt_dir, sample_dir, run_dir, log_dir = make_output_directories(args.outdir, exp_name)
+    ckpt_dir = outdir / "checkpoints" / exp_name
+    sample_dir = outdir / "samples" / exp_name
+    run_dir = outdir / "runs" / exp_name
+    for d in (ckpt_dir, sample_dir, run_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    #
+    # Setting up logger
+    #    
     log_level = logging.DEBUG if args.debug else logging.INFO
     train_logger = setup_component_logger("train", log_dir / f"{exp_name}.log", level=log_level)
-    train_logger.info(f"EXPERIMENT: {exp_name}")
+    
+    #
+    # Printing some helpful information
+    #
+    train_logger.info(f"{emoji.info} EXPERIMENT: {exp_name}")
+    train_logger.info(f"{emoji.info} MODEL: {args.model}")
     train_logger.debug(f"ckpt_dir={ckpt_dir}")
     train_logger.debug(f"sample_dir={sample_dir}")
     train_logger.debug(f"run_dir={run_dir}")
@@ -162,7 +183,9 @@ def main():
 
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr)
 
+    #
     # Learning rate scheduler
+    #
     if args.lr_scheduler == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     elif args.lr_scheduler == "step":
@@ -170,6 +193,9 @@ def main():
     else:
         scheduler = None
 
+    #
+    # Some other stuff
+    #
     use_amp = bool(args.amp and device in ("cuda", "mps", "cpu"))
     amp_dtype = torch.float16 if device in ("cuda", "mps") else torch.bfloat16
     autocast_ctx = (
@@ -191,23 +217,17 @@ def main():
         scaler = _NullScaler()
 
     #
-    # Resume logic
+    # Load checkpoint if resuming
     #
     start_epoch = 1
     global_step = 0
-    if resume:
+    if resume_ckpt_path and resume_ckpt_path.is_file():
         ep, global_step, _ = load_checkpoint(resume_ckpt_path, net, opt, scaler, map_location=device)
         start_epoch = ep + 1
-        train_logger.info(f"[Resume] {resume_ckpt_path} (epoch={ep}, global_step={global_step})")
-    elif auto_resume:
-        latest = find_latest_checkpoint(ckpt_dir)
-        if latest:
-            ep, global_step, _ = load_checkpoint(latest, net, opt, scaler, map_location=device)
-            start_epoch = ep + 1
-            train_logger.info(f"[Auto-Resume] {latest} (epoch={ep}, global_step={global_step})")
+        train_logger.info(f"{emoji.info} [Resume] {resume_ckpt_path} (epoch={ep}, global_step={global_step})")
 
     if start_epoch > args.epochs:
-        train_logger.info(f"[Resume/Auto-Resume] (start_epoch={start_epoch} >= total_epochs={args.epochs}).  Exiting.")
+        train_logger.info(f"{emoji.warning} [Resume/Auto-Resume] (start_epoch={start_epoch} >= total_epochs={args.epochs}).  Exiting.")
         return
 
     #
@@ -230,12 +250,12 @@ def main():
     # TensorBoard writer
     #
     writer = SummaryWriter(log_dir=str(run_dir))
-    train_logger.info(f"TensorBoard logs at: {writer.log_dir}")
+    train_logger.info(f"{emoji.info} `TensorBoard logs at: {writer.log_dir}")
 
     #
     # Epochs - start
     #
-    train_logger.info(f"Training for {args.epochs-start_epoch+1} epochs")
+    train_logger.info(f"{emoji.info} Training for {args.epochs-start_epoch+1} epochs")
     last_ckpt_time = time.time()
     last_ckpt_epoch = None
     best_val = float("inf")

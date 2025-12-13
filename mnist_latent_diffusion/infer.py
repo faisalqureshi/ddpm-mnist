@@ -46,9 +46,9 @@ def detect_ae_model_type(ae_ckpt_path: Path) -> str:
 def load_autoencoder(ae_ckpt_path: Path, device, latent_dim: int, model_type: str):
     """Load the correct autoencoder based on model type"""
 
-    if model_type == "conv":
+    if model_type == "ae-conv":
         ae_module = ae_module_conv
-    elif model_type == "mlp":
+    elif model_type == "ae-mlp":
         ae_module = ae_module_mlp
     else:
         raise ValueError(f"Unknown autoencoder model type: {model_type}")
@@ -64,7 +64,7 @@ def load_autoencoder(ae_ckpt_path: Path, device, latent_dim: int, model_type: st
 def main():
     parser = argparse.ArgumentParser("Generate images with latent diffusion")
     parser.add_argument("--ckpt", type=str, required=True, help="Diffusion model checkpoint")
-    parser.add_argument("--ae-ckpt", type=str, required=True, help="Autoencoder checkpoint")
+    parser.add_argument("--ae-ckpt", type=str, default=None, help="Autoencoder checkpoint (auto-detected if not provided)")
     parser.add_argument("--num-images", type=int, default=64)
     parser.add_argument("--output", type=str, default="generated.png")
     parser.add_argument("--device", type=str, default=None)
@@ -87,12 +87,21 @@ def main():
 
     print(f"Architecture from checkpoint: latent_dim={latent_dim}, hidden_dim={hidden_dim}, T={T}")
 
+    # Determine AE checkpoint path
+    ae_ckpt_path = args.ae_ckpt
+    if not ae_ckpt_path and "ae_ckpt_path" in ckpt_args:
+        ae_ckpt_path = ckpt_args["ae_ckpt_path"]
+        print(f"Auto-detected autoencoder checkpoint from diffusion checkpoint: {ae_ckpt_path}")
+    elif not ae_ckpt_path:
+        print("Error: --ae-ckpt not provided and not found in diffusion checkpoint metadata")
+        exit(-1)
+
     # Detect autoencoder type and load decoder
-    ae_model_type = detect_ae_model_type(Path(args.ae_ckpt))
+    ae_model_type = detect_ae_model_type(Path(ae_ckpt_path))
     print(f"Detected autoencoder type: {ae_model_type}")
 
-    print(f"Loading autoencoder from {args.ae_ckpt}")
-    decoder = load_autoencoder(Path(args.ae_ckpt), device, latent_dim, ae_model_type)
+    print(f"Loading autoencoder from {ae_ckpt_path}")
+    decoder = load_autoencoder(Path(ae_ckpt_path), device, latent_dim, ae_model_type)
 
     # Build diffusion model with checkpoint parameters
     net = LatentDenoiser(

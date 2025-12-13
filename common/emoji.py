@@ -1,0 +1,5 @@
+step = "\U0001F64A"
+error = "\U0000274C"
+warning = "\U0000274E"
+ok = "\U00002705"
+info = "\U0001F913"

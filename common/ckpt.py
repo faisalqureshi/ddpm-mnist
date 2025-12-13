@@ -4,6 +4,83 @@ from pathlib import Path
 from typing import Optional
 import re
 from datetime import datetime
+from . import emoji
+from . import error_codes
+
+def resolve_resume_path(args):
+    if args.resume:
+        ckpt_path = Path(args.resume)
+        print(f"{emoji.step} Inspecting checkpoint: {ckpt_path}") 
+        ckpt_model = infer_model_from_checkpoint(ckpt_path)
+        if args.model and args.model != ckpt_model:
+            print(f"{emoji.error} Model mismatch.  Exiting.")
+            exit(error_codes.MODEL_MISMATCH)
+        else:
+            print(f"{emoji.ok} Extracted model: {ckpt_model}")
+            args.model = ckpt_model
+        if args.auto_resume:
+            print(f"{emoji.warning} Ignored auto-resume") 
+        return ckpt_path.parent.name, ckpt_path, ckpt_model
+    elif args.auto_resume:
+        if not args.model:
+            print(f"{emoji.error} Model must be specified with auto-resume.  Exiting.")
+            exit(error_codes.NO_MODEL_SPECIFIED)
+        else:
+            return find_latest_checkpoint(Path(args.outdir), args.model)
+    else:
+        return None, None, None
+
+def infer_model_from_checkpoint(ckpt_path: Path):
+    try:
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    except:
+        print(f"{emoji.error} Error loading checkpoint.  Exiting")
+        exit(-1)    
+    try:
+        if isinstance(ckpt["args"], dict):
+            ckpt_model = ckpt["args"]["model"]
+        else:
+            ckpt_model = ckpt["args"].model
+    except:
+        print(f"{emoji.error} Error extracting model from ckpt.  Exiting.")
+        exit(-1)
+    return ckpt_model
+
+def find_latest_checkpoint(outdir: Path, model):
+    ckpt_base = outdir / "checkpoints"
+    print(f"{emoji.step} Looking for checkpoints in folder: {ckpt_base}")
+    if ckpt_base.exists():
+        matching_dirs = sorted(
+            ckpt_base.glob(model+"*"),
+            key = lambda x: x.stat().st_mtime,
+            reverse = True
+        )
+        if matching_dirs:
+            print(f"{emoji.ok} Found {len(matching_dirs)} matching folders")
+            latest_exp_dir = matching_dirs[0]
+            print(f"{emoji.step} Looking for checkpoints in {latest_exp_dir}")
+            ckpts = sorted(
+                latest_exp_dir.glob("*.pt"),
+                key = lambda x: x.stat().st_mtime,
+                reverse = True
+            )
+            resume_ckpt_path = ckpts[0] if ckpts else None
+            if resume_ckpt_path:
+                print(f"{emoji.ok} Found checkpoint {resume_ckpt_path}")
+                ckpt_model = infer_model_from_checkpoint(resume_ckpt_path)
+                if model != ckpt_model:
+                    print(f"{emoji.error} Model mismatch.  Exiting.")
+                    exit(error_codes.MODEL_MISMATCH)
+                else:
+                    return  latest_exp_dir.name, resume_ckpt_path, ckpt_model
+            else:
+                print(f"{emoji.warning} No checkpoint found")
+        else:
+            print(f"{emoji.warning} No matching folders found")
+    else:
+        print(f"{emoji.warning} Folder not found")
+
+    return None, None, None
 
 def save_checkpoint(path: Path, model, optimizer, scaler, epoch, global_step, args, exp_name):
     state = {
@@ -26,32 +103,6 @@ def save_checkpoint(path: Path, model, optimizer, scaler, epoch, global_step, ar
         if os.path.exists(tmp):
             try: os.remove(tmp)
             except Exception: pass
-
-# def save_checkpoint_atomic(state: dict, path: str):
-#     os.makedirs(os.path.dirname(path), exist_ok=True)
-#     d = os.path.dirname(path)
-#     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp_ckpt_", suffix=".pt")
-#     os.close(fd)
-#     try:
-#         torch.save(state, tmp)
-#         os.replace(tmp, path)  # atomic on POSIX
-#         logging.info(f"Saved checkpoint: {path}")
-#     finally:
-#         if os.path.exists(tmp):
-#             try: os.remove(tmp)
-#             except Exception: pass
-
-def resolve_ckpt_path(p: Path) -> Optional[Path]:
-    """If p is a dir, try p/'latest.pt' then newest *.pt. If p is a file, return it."""
-    if p.is_file():
-        return p
-    if p.is_dir():
-        latest = p / "latest.pt"
-        if latest.is_file():
-            return latest
-        pts = sorted(p.glob("*.pt"), key=lambda q: q.stat().st_mtime, reverse=True)
-        return pts[0] if pts else None
-    return None
 
 def inspect_checkpoint(ckpt_path: Path) -> None:
     """Minimal checkpoint inspection (PyTorch .pt)."""
@@ -81,7 +132,7 @@ def inspect_checkpoint(ckpt_path: Path) -> None:
                 for k in args:
                     print(f"  - {k}: {args[k]}")
             else:
-                print(f"- args: {type(obj["args"]).__name__}")
+                print(f"- args: {type(obj['args']).__name__}")
         for k in ("meta", "amp_scaler_state"):
             if k in obj:
                 print(f"- {k}: {type(obj[k]).__name__}")
@@ -97,72 +148,15 @@ def inspect_checkpoint(ckpt_path: Path) -> None:
     else:
         print(f"Object type: {type(obj).__name__}")
 
-def load_checkpoint(path: Path, model, optimizer=None, scaler=None, map_location="cpu"):
+def load_checkpoint(path: Path, model=None, optimizer=None, scaler=None, map_location="cpu"):
     ckpt = torch.load(path, map_location=map_location, weights_only=False)
-    model.load_state_dict(ckpt["model"])
+    if model is not None and "model" in ckpt and ckpt["model"]:
+        model.load_state_dict(ckpt["model"])
     if optimizer is not None and "optimizer" in ckpt and ckpt["optimizer"]:
         optimizer.load_state_dict(ckpt["optimizer"])
     if scaler is not None and ckpt.get("scaler"):
         scaler.load_state_dict(ckpt["scaler"])
     return ckpt.get("epoch", 0), ckpt.get("global_step", 0), ckpt.get("args", None)
-
-def find_latest_checkpoint(ckpt_dir: Path) -> Optional[Path]:
-    if not ckpt_dir.exists():
-        return None
-    cands = sorted(ckpt_dir.glob("checkpoint_epoch_*.pt"))
-    return cands[-1] if cands else None
-
-PAT = re.compile(r"^(?P<model>[^-]+).*?(?P<ts>\d{8}-\d{6})$")
-def find_latest_experiment(outdir: Path, model) -> Optional[Path]:
-    ckpt_dir = outdir / "checkpoints"
-    if not ckpt_dir.exists():
-        return None
-    paths = sorted(ckpt_dir.glob("*"))
-
-    def _parse_entry(p: Path):
-        m = PAT.match(p.name)
-        if not (p.is_dir() and m):
-            return None
-        try:
-            ts = datetime.strptime(m["ts"], "%Y%m%d-%H%M%S")
-        except ValueError:
-            return None
-        return m["model"], ts, p
-
-    rows = [_parse_entry(p) for p in paths]
-    rows = [r for r in rows if r and r[0] == model]   # filter by model
-    if not rows:
-        return None
-
-    return max(rows, key=lambda r: r[1])[2]
-
-def find_latest_autoencoder_checkpoint(outdir: Path, model_prefix: str) -> Optional[Path]:
-    """
-    Find the latest autoencoder checkpoint for a given model prefix (e.g., 'mlp', 'conv').
-
-    Searches in outdir/checkpoints/ for directories matching {model_prefix}-*,
-    then returns the latest checkpoint from the most recently modified directory.
-
-    Args:
-        outdir: Base output directory (e.g., $SCRATCH or ./outputs)
-        model_prefix: Model prefix to search for (e.g., 'mlp', 'conv')
-
-    Returns:
-        Path to latest checkpoint, or None if not found
-    """
-    ckpt_base = Path(outdir) / "checkpoints"
-    if not ckpt_base.exists():
-        return None
-
-    # Find all directories matching the prefix pattern
-    pattern = f"{model_prefix}-*"
-    matching_dirs = sorted(ckpt_base.glob(pattern), key=lambda x: x.stat().st_mtime, reverse=True)
-
-    if not matching_dirs:
-        return None
-
-    # Get latest checkpoint from the most recent directory
-    return find_latest_checkpoint(matching_dirs[0])
 
 def save_checkpoint_and_link_latest(ckpt_dir: Path, model, optimizer, scaler, epoch, global_step, args, exp_name):
     ckpt_path = ckpt_dir / f"checkpoint_epoch_{epoch:06d}.pt"

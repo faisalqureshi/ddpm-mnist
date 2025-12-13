@@ -86,7 +86,25 @@ python train.py \
     --generate-images
 ```
 
-The script automatically detects the autoencoder type (mlp or conv) from the checkpoint metadata. You can also let it auto-select the latest autoencoder:
+**Resume from checkpoint** (ae_ckpt_path automatically extracted):
+```bash
+cd mnist_latent_diffusion
+python train.py \
+    --resume /path/to/latent-diffusion/checkpoint.pt \
+    --epochs 50
+```
+
+When resuming, the autoencoder checkpoint path is automatically extracted from the diffusion checkpoint metadata, so you don't need to specify `--ae-ckpt` again.
+
+**Auto-resume** (finds latest latent-diffusion experiment):
+```bash
+cd mnist_latent_diffusion
+python train.py \
+    --auto-resume \
+    --epochs 50
+```
+
+The script can also auto-select the latest autoencoder if neither `--ae-ckpt` nor `--resume` is provided:
 
 ```bash
 cd mnist_latent_diffusion
@@ -113,12 +131,21 @@ Latent diffusion (automatically detects autoencoder type):
 cd mnist_latent_diffusion
 python infer.py \
     --ckpt /path/to/diffusion/checkpoint.pt \
-    --ae-ckpt /path/to/autoencoder/checkpoint.pt \
     --num-images 64 \
     --output generated.png
 ```
 
-**Note**: Inference scripts extract all necessary parameters (T, beta_start, beta_end, latent_dim, hidden_dim) from checkpoint metadata, so you don't need to specify them manually.
+The `--ae-ckpt` parameter is **optional** - if not provided, the script automatically extracts the autoencoder checkpoint path from the diffusion checkpoint metadata. You can override this by specifying `--ae-ckpt` explicitly:
+
+```bash
+cd mnist_latent_diffusion
+python infer.py \
+    --ckpt /path/to/diffusion/checkpoint.pt \
+    --ae-ckpt /path/to/different/autoencoder.pt \
+    --num-images 64
+```
+
+**Note**: Inference scripts extract all necessary parameters (T, beta_start, beta_end, latent_dim, hidden_dim, ae_ckpt_path) from checkpoint metadata, so you don't need to specify them manually.
 
 ### Utility Scripts
 
@@ -150,6 +177,26 @@ cd mnist_ae
 python inspect_ckpt.py /path/to/checkpoint.pt
 ```
 
+The `run_tsne.py` script generates three output files in the specified output directory:
+- `tsne_latent_space.png` - All digits colored by class on a single plot
+- `tsne_by_digit.png` - 10 subplots, one per digit
+- `reconstructions.png` - Sample original vs reconstructed images
+
+**Interactive Latent Space Visualization** (mnist_ae/tsne_visualization.ipynb):
+
+For interactive exploration, use the Jupyter notebook:
+
+```bash
+cd mnist_ae
+jupyter notebook tsne_visualization.ipynb
+```
+
+The notebook automatically detects autoencoder type (MLP or Conv) from the checkpoint and provides:
+- Interactive t-SNE visualization with matplotlib
+- Individual digit plots
+- Cluster quality metrics (silhouette score, Calinski-Harabasz score)
+- Sample reconstructions
+
 ## Key Architectural Patterns
 
 ### Checkpoint Management
@@ -164,14 +211,24 @@ All training scripts use the common checkpoint utilities:
 
 ### Experiment Naming Convention
 
-Experiment names are auto-generated with this pattern:
-```
-{model}-d{digit}-bs{batch_size}-lr{lr}-seed{seed}-{timestamp}
-```
+Experiment names are auto-generated with patterns specific to each model type:
 
-Examples:
-- `mlp-dall-bs128-lr0.0002-seed42-20251207-103045`
-- `latent-diffusion-d5-bs128-lr0.0002-T1000-seed42-20251207-103045`
+**Autoencoder:**
+```
+{model}-dall-bs{batch_size}-lr{lr}-D{latent_dim}-seed{seed}-{timestamp}
+```
+Example: `mlp-dall-bs128-lr0.0002-D16-seed42-20251207-103045`
+
+**Latent Diffusion:**
+```
+latent-diffusion-{ae_model}-D{latent_dim}-d{digit}-bs{batch_size}-lr{lr}-T{timesteps}-seed{seed}-{timestamp}
+```
+Example: `latent-diffusion-conv-D16-dall-bs128-lr0.0002-T1000-seed42-20251207-103045`
+
+The latent diffusion naming now includes:
+- **ae_model**: Type of autoencoder used (`conv` or `mlp`)
+- **latent_dim**: Dimension of the latent space (typically 16)
+- **ae_ckpt_path**: Stored in checkpoint metadata for reproducibility
 
 ### Time Conditioning (FiLM)
 
@@ -248,12 +305,16 @@ salloc --time=0:10:0 --mem=4000M --gpus-per-node=1 --ntasks=1 --account=def-fqur
 source mnist_single_digit/setup.sh  # Loads modules and activates venv
 ```
 
+The `setup.sh` script loads required modules and activates the virtual environment at `~/venv/ddpm/`:
+
 Modules loaded:
 - python/3.12
 - python-build-bundle/2024a
 - scipy-stack/2025a
 - opencv/4.12.0
 - arrow/21.0.0
+
+**Note**: Ensure you have created the virtual environment at `~/venv/ddpm/` with PyTorch, torchvision, datasets (HuggingFace), tqdm, tensorboard, scikit-learn, and matplotlib installed.
 
 ### SLURM Integration
 

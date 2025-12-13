@@ -15,6 +15,7 @@ class MLPEncoder(nn.Module):
             nn.Linear(256, 128), nn.ReLU(inplace=True),
             nn.Linear(128, latent_dim),
         )
+        self.name = 'mlp-ae'
 
     def forward(self, x):
         return self.net(x)           # (B,latent_dim)
@@ -30,6 +31,7 @@ class MLPDecoder(nn.Module):
         ]
         self.core = nn.Sequential(*layers)
         self.head = nn.Sigmoid() if use_sigmoid else nn.Tanh()
+        self.name = "ae-mlp"
 
     def forward(self, z):
         x = self.core(z)                  # (B,784)

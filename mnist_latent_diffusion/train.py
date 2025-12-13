@@ -19,9 +19,9 @@ from contextlib import nullcontext
 # Import common utilities
 from common.device import get_device, seed_everything, seed_worker
 from common.data import HF_MNIST, make_mnist_loader
-from common.logging import setup_component_logger, log_args_rich
+from common.logger_utils import setup_component_logger, log_args_rich
 from common.slurm import install_signal_handlers, stop_requested
-from common.ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest, find_latest_autoencoder_checkpoint
+from common.ckpt import load_checkpoint, find_latest_checkpoint, save_checkpoint_and_link_latest, find_latest_autoencoder_checkpoint, resolve_resume_path_and_exp_name
 
 # Import BOTH AE model modules
 import importlib.util
@@ -66,10 +66,10 @@ def load_autoencoder(ckpt_path: Path, device, latent_dim: int, model_type: str, 
     """Load pretrained autoencoder encoder and decoder based on model type"""
 
     # Select the correct autoencoder module
-    if model_type == "conv":
+    if model_type == "ae-conv":
         ae_module = ae_module_conv
         train_logger.info(f"Loading Conv autoencoder (latent_dim={latent_dim})")
-    elif model_type == "mlp":
+    elif model_type == "ae-mlp":
         ae_module = ae_module_mlp
         train_logger.info(f"Loading MLP autoencoder (latent_dim={latent_dim})")
     else:
@@ -111,21 +111,96 @@ def main():
     parser.add_argument("--debug", action="store_true", default=False)
     args = parser.parse_args()
 
-    # Setup directories
+    #
+    # Setup directory
+    #
     outdir = Path(args.outdir)
     log_dir = outdir / Path("logs") if args.logdir is None else Path(args.logdir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    exp_name = Path(
-        f"latent-diffusion"
-        f"-d{args.only_digit if args.only_digit is not None else 'all'}"
-        f"-bs{args.batch_size}"
-        f"-lr{args.lr:g}"
-        f"-T{args.T}"
-        f"-seed{args.seed}"
-        f"-{time.strftime('%Y%m%d-%H%M%S')}"
+    #
+    # Resume logic - determine checkpoint path and experiment name
+    #
+    success, resume_ckpt_path, exp_name = resolve_resume_path_and_exp_name(
+        args, outdir, exp_name_pattern="latent-diffusion-*"
     )
+    if not success:
+        print("--resume doesn't point to a valid checkpoint file.")
+        exit(-1)
+    else:
+        print(f"Using resume: {True if args.resume else False}")
+        print(f"Using auto-resume: {args.auto_resume}")
+        if resume_ckpt_path:
+            print(f"resume_ckpt_path = {resume_ckpt_path}")
+            print(f"exp_name = {exp_name}")
 
+    # Resolve autoencoder checkpoint path
+    # Priority: 1) Extract from resume checkpoint metadata
+    #           2) Use --ae-ckpt if provided
+    #           3) Use --ae-ckpt-dir if provided
+    #           4) Auto-detect latest autoencoder
+    ae_ckpt_path = None
+
+    # If resuming, try to extract ae_ckpt_path from checkpoint metadata
+    if resume_ckpt_path and resume_ckpt_path.exists():
+        try:
+            ckpt = torch.load(resume_ckpt_path, map_location="cpu", weights_only=False)
+            if "args" in ckpt and isinstance(ckpt["args"], dict) and "ae_ckpt_path" in ckpt["args"]:
+                ae_ckpt_path = Path(ckpt["args"]["ae_ckpt_path"])
+                print(f"Found AE checkpoint from resume checkpoint: {ae_ckpt_path}")
+        except Exception as e:
+            print(f"Warning: Could not extract ae_ckpt_path from checkpoint: {e}")
+
+    # Override with explicit --ae-ckpt if provided
+    if args.ae_ckpt:
+        ae_ckpt_path = Path(args.ae_ckpt)
+        print(f"AE checkpoint specified args.ae_ckpt: {ae_ckpt_path}")
+    elif not ae_ckpt_path:  # Only search if we didn't get it from resume checkpoint
+        if args.ae_ckpt_dir:
+            ae_ckpt_dir = Path(args.ae_ckpt_dir)
+            ae_ckpt_path = find_latest_checkpoint(ae_ckpt_dir)
+            if not ae_ckpt_path:
+                print(f"Error: No AE checkpoint found in {ae_ckpt_dir}")
+                exit(-1)
+            print(f"Auto-selected latest AE checkpoint in {ae_ckpt_dir}: {ae_ckpt_path}")
+        else:
+            # Try to find the latest autoencoder checkpoint (try ae-conv first, then ae-mlp)
+            ae_ckpt_path = find_latest_autoencoder_checkpoint(args.outdir, "ae-conv")
+            if not ae_ckpt_path:
+                ae_ckpt_path = find_latest_autoencoder_checkpoint(args.outdir, "ae-mlp")
+
+            if ae_ckpt_path:
+                print(f"Auto-selected latest AE checkpoint under {args.outdir}: {ae_ckpt_path}")
+            else:
+                print("Error: No autoencoder checkpoint specified. Use --ae-ckpt or --ae-ckpt-dir")
+                exit(-1)
+
+    # Detect AE model type and latent dim
+    latent_dim, ae_model_type = infer_latent_dim_from_checkpoint(ae_ckpt_path)
+
+    print(f"Using AE checkpoint: {ae_ckpt_path}")
+    print(latent_dim)
+    print(ae_model_type)
+    exit(0)
+
+    # Generate new experiment name if not resuming
+    if not exp_name:
+        exp_name = Path(
+            f"latent-diffusion"
+            f"-{ae_model_type}"
+            f"-D{latent_dim}"
+            f"-d{args.only_digit if args.only_digit is not None else 'all'}"
+            f"-bs{args.batch_size}"
+            f"-lr{args.lr:g}"
+            f"-T{args.T}"
+            f"-seed{args.seed}"
+            f"-{time.strftime('%Y%m%d-%H%M%S')}"
+        )
+    else:
+        exp_name = Path(exp_name)
+        print(f"Resuming experiment: {exp_name}")
+
+    # Setup logger
     log_path = log_dir / f"{exp_name}.log"
     train_logger = setup_component_logger("train", log_path)
     train_logger.info(f"EXPERIMENT: {exp_name}")
@@ -137,36 +212,13 @@ def main():
     dl_gen = seed_everything(args.seed, True)
     install_signal_handlers()
 
-    # Resolve autoencoder checkpoint path
-    ae_ckpt_path = None
-    if args.ae_ckpt:
-        ae_ckpt_path = Path(args.ae_ckpt)
-    elif args.ae_ckpt_dir:
-        ae_ckpt_dir = Path(args.ae_ckpt_dir)
-        ae_ckpt_path = find_latest_checkpoint(ae_ckpt_dir)
-        if not ae_ckpt_path:
-            train_logger.error(f"No checkpoint found in {ae_ckpt_dir}")
-            exit(-1)
-        train_logger.info(f"Auto-selected latest AE checkpoint: {ae_ckpt_path}")
-    else:
-        # Try to find the latest autoencoder checkpoint (try conv first, then mlp)
-        ae_ckpt_path = find_latest_autoencoder_checkpoint(args.outdir, "conv")
-        if not ae_ckpt_path:
-            ae_ckpt_path = find_latest_autoencoder_checkpoint(args.outdir, "mlp")
-
-        if ae_ckpt_path:
-            train_logger.info(f"Auto-selected latest AE checkpoint: {ae_ckpt_path}")
-        else:
-            train_logger.error("No autoencoder checkpoint specified. Use --ae-ckpt or --ae-ckpt-dir")
-            exit(-1)
-
-    # Infer latent_dim and model_type from autoencoder checkpoint
-    latent_dim, ae_model_type = infer_latent_dim_from_checkpoint(ae_ckpt_path)
     train_logger.info(f"Detected autoencoder type: {ae_model_type}")
     train_logger.info(f"Inferred latent_dim={latent_dim} from autoencoder checkpoint")
+    train_logger.info(f"Using autoencoder checkpoint: {ae_ckpt_path}")
 
-    # Store latent_dim in args for checkpointing
+    # Store latent_dim and ae_ckpt (checkpoint file path) in args for checkpointing
     args.latent_dim = latent_dim
+    args.ae_ckpt_path = str(ae_ckpt_path)  # Store the actual .pt file path, not directory
 
     # Create output directories
     ckpt_dir = outdir / "checkpoints" / exp_name
@@ -226,20 +278,13 @@ def main():
             def load_state_dict(self, sd): pass
         scaler = _NullScaler()
 
-    # Resume logic
+    # Load checkpoint if resuming
     start_epoch = 1
     global_step = 0
-    if args.resume:
-        path = Path(args.resume)
-        ep, global_step, _ = load_checkpoint(path, net, opt, scaler, map_location=device)
+    if resume_ckpt_path and resume_ckpt_path.is_file():
+        ep, global_step, _ = load_checkpoint(resume_ckpt_path, net, opt, scaler, map_location=device)
         start_epoch = ep + 1
-        train_logger.info(f"[Resume] {path} (epoch={ep}, global_step={global_step})")
-    elif args.auto_resume:
-        latest = find_latest_checkpoint(ckpt_dir)
-        if latest:
-            ep, global_step, _ = load_checkpoint(latest, net, opt, scaler, map_location=device)
-            start_epoch = ep + 1
-            train_logger.info(f"[Auto-Resume] {latest} (epoch={ep}, global_step={global_step})")
+        train_logger.info(f"[Resume] {resume_ckpt_path} (epoch={ep}, global_step={global_step})")
 
     if start_epoch > args.epochs:
         train_logger.info(f"[Resume/Auto-Resume] Already trained. Exiting.")

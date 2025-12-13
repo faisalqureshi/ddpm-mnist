@@ -53,3 +53,5 @@ data/
 *.npy
 *.pkl
 *.ckpt
+
+*outputs*

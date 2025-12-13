@@ -5,14 +5,16 @@ Shared modules:
 - ckpt: Checkpoint management (save, load, find latest)
 - data: Dataset loaders (MNIST)
 - device: Device selection and seeding
-- logging: Logger setup
+- logger_utils: Logger setup
 - slurm: SLURM timeout handling
 """
 
 __all__ = [
     "ckpt",
-    "data", 
+    "data",
     "device",
-    "logging",
+    "logger_utils",
     "slurm",
+    "emoji",
+    "error_codes"
 ]
