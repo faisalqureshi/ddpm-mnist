@@ -177,3 +177,171 @@ setInterval(() => {
         hideStatus();
     }
 }, 5000);
+
+// ===== FILE BROWSER =====
+
+const fileBrowserModal = document.getElementById('fileBrowserModal');
+const modalClose = document.querySelector('.modal-close');
+const fileList = document.getElementById('fileList');
+const breadcrumb = document.getElementById('breadcrumb');
+const selectedPathSpan = document.getElementById('selectedPath');
+const selectFileBtn = document.getElementById('selectFileBtn');
+const cancelBrowseBtn = document.getElementById('cancelBrowseBtn');
+const parentDirBtn = document.getElementById('parentDirBtn');
+const homeBtn = document.getElementById('homeBtn');
+const projectBtn = document.getElementById('projectBtn');
+
+let currentPath = '';
+let selectedFile = null;
+let targetInputId = null;
+
+// Open file browser when Browse button clicked
+document.querySelectorAll('.browse-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+        targetInputId = e.target.dataset.target;
+        openFileBrowser();
+    });
+});
+
+// Close modal handlers
+modalClose.addEventListener('click', closeFileBrowser);
+cancelBrowseBtn.addEventListener('click', closeFileBrowser);
+
+// Click outside modal to close
+fileBrowserModal.addEventListener('click', (e) => {
+    if (e.target === fileBrowserModal) {
+        closeFileBrowser();
+    }
+});
+
+// Navigation buttons
+parentDirBtn.addEventListener('click', () => {
+    if (currentPath) {
+        browseDirectory(currentPath, true);
+    }
+});
+
+homeBtn.addEventListener('click', () => {
+    browseDirectory(null); // Will use HOME from server
+});
+
+projectBtn.addEventListener('click', () => {
+    browseDirectory('../'); // Navigate to project root
+});
+
+// Select file button
+selectFileBtn.addEventListener('click', () => {
+    if (selectedFile && targetInputId) {
+        document.getElementById(targetInputId).value = selectedFile;
+        closeFileBrowser();
+    }
+});
+
+function openFileBrowser() {
+    fileBrowserModal.classList.add('show');
+    selectedFile = null;
+    selectFileBtn.disabled = true;
+    selectedPathSpan.textContent = 'None';
+    browseDirectory(null); // Start at HOME
+}
+
+function closeFileBrowser() {
+    fileBrowserModal.classList.remove('show');
+    selectedFile = null;
+    targetInputId = null;
+}
+
+async function browseDirectory(path = null, useParent = false) {
+    fileList.innerHTML = '<div class="loading-spinner">Loading...</div>';
+
+    try {
+        const url = new URL('/api/browse', window.location.origin);
+        if (path) {
+            url.searchParams.set('path', path);
+        }
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Failed to browse directory');
+        }
+
+        currentPath = useParent ? data.parentPath : data.currentPath;
+        breadcrumb.textContent = currentPath;
+
+        // Render file list
+        renderFileList(data.items);
+
+    } catch (error) {
+        console.error('Browse error:', error);
+        fileList.innerHTML = `<div class="loading-spinner" style="color: red;">Error: ${error.message}</div>`;
+    }
+}
+
+function renderFileList(items) {
+    if (items.length === 0) {
+        fileList.innerHTML = '<div class="loading-spinner">Empty directory</div>';
+        return;
+    }
+
+    fileList.innerHTML = '';
+
+    items.forEach(item => {
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        if (item.isDirectory) {
+            fileItem.classList.add('directory');
+        }
+
+        const icon = document.createElement('span');
+        icon.className = 'file-icon';
+        icon.textContent = item.isDirectory ? '📁' : (item.isCheckpoint ? '📄' : '📃');
+
+        const name = document.createElement('span');
+        name.className = 'file-name';
+        name.textContent = item.name;
+
+        const size = document.createElement('span');
+        size.className = 'file-size';
+        if (!item.isDirectory && item.size) {
+            size.textContent = formatFileSize(item.size);
+        }
+
+        fileItem.appendChild(icon);
+        fileItem.appendChild(name);
+        fileItem.appendChild(size);
+
+        // Click handler
+        fileItem.addEventListener('click', () => {
+            if (item.isDirectory) {
+                // Navigate into directory
+                browseDirectory(item.path);
+            } else {
+                // Select file
+                selectFile(item.path, fileItem);
+            }
+        });
+
+        fileList.appendChild(fileItem);
+    });
+}
+
+function selectFile(filePath, element) {
+    // Remove previous selection
+    document.querySelectorAll('.file-item.selected').forEach(el => {
+        el.classList.remove('selected');
+    });
+
+    // Mark as selected
+    element.classList.add('selected');
+    selectedFile = filePath;
+    selectedPathSpan.textContent = filePath;
+    selectFileBtn.disabled = false;
+}
+
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}

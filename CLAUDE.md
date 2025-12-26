@@ -16,6 +16,7 @@ The repository is organized into independent experiment directories that share c
 - **`mnist_latent_diffusion/`** - **[RECOMMENDED]** Unified latent diffusion (automatically detects and works with both MLP and Conv autoencoders)
 - **`mnist_latent_diffusion_mlp/`** - Legacy: MLP-specific latent diffusion (use `mnist_latent_diffusion/` instead)
 - **`mnist_latent_diffusion_conv/`** - Legacy: Conv-specific latent diffusion (use `mnist_latent_diffusion/` instead)
+- **`webapp/`** - Node.js web application for interactive MNIST generation through browser interface
 
 ### Import Pattern
 
@@ -147,6 +148,46 @@ python infer.py \
 ```
 
 **Note**: Inference scripts extract all necessary parameters (T, beta_start, beta_end, latent_dim, hidden_dim, ae_ckpt_path) from checkpoint metadata, so you don't need to specify them manually.
+
+### Web Application (webapp)
+
+Interactive browser-based interface for generating MNIST digits:
+
+**Setup** (first time only):
+```bash
+cd webapp
+npm install
+```
+
+**Start the server**:
+```bash
+cd webapp
+npm start
+```
+
+Then open `http://localhost:3000` in your browser.
+
+**Features**:
+- Web UI for configuring generation parameters (number of images, digit selection)
+- Auto-discovery of available checkpoints from `outputs/checkpoints/` and `$SCRATCH/checkpoints/`
+- Real-time image generation with progress feedback
+- Automatic cleanup of generated images after 1 hour
+
+**Architecture**:
+- **Backend** (`server.js`): Express.js server that spawns Python inference processes via `child_process`
+- **Frontend** (`public/`): HTML/CSS/JS interface with REST API integration
+- **Python Bridge**: Calls `mnist_latent_diffusion/infer.py` with user-specified parameters
+- **API Endpoints**:
+  - `POST /api/generate` - Generate images (returns image URL)
+  - `GET /api/checkpoints` - List available model checkpoints
+
+**Development mode** (auto-reload on changes):
+```bash
+cd webapp
+npm run dev
+```
+
+See `webapp/README.md` and `webapp/SETUP.md` for detailed documentation.
 
 ### Utility Scripts
 
@@ -487,9 +528,20 @@ Arguments supported by most/all training scripts:
 
 ## Development Notes
 
+### Python/PyTorch Components
+
 - All training scripts use **AdamW** optimizer by default
 - TensorBoard logging is automatic (writes to `{outdir}/runs/{exp_name}/`)
 - Images are saved as grids using `torchvision.utils.save_image()`
 - Latent diffusion requires training autoencoder first
 - Encoder is **always frozen** during latent diffusion training
 - Use `--debug` flag to enable debug-level logging
+
+### Web Application
+
+- **Node.js required**: Install from https://nodejs.org/ (v14+)
+- **Python integration**: Server spawns Python processes using `child_process.spawn()`
+- **Image cleanup**: Generated images auto-deleted after 1 hour (configurable in `server.js`)
+- **Port configuration**: Default port 3000, change via `PORT` environment variable
+- **Checkpoint discovery**: Scans `outputs/checkpoints/` and `$SCRATCH/checkpoints/` for models
+- **Security note**: Not hardened for public deployment - add authentication/rate limiting for production use
