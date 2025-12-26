@@ -1,8 +1,12 @@
+#https://drive.google.com/file/d/1jOVQVjx71NeGX6ZKfmgautSAChc68ZVv/view?usp=sharing
+CHECKPOINT_ID = "1jOVQVjx71NeGX6ZKfmgautSAChc68ZVv"
+
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import os, argparse, time, random, signal
+import gdown
 from typing import Optional
 import torch
 import torch.nn.functional as F
@@ -14,7 +18,7 @@ from common.logger_utils import setup_component_logger, log_args_rich
 from common.slurm import install_signal_handlers, stop_requested
 from common import error_codes
 from common import emoji
-from common.ckpt import resolve_resume_path, load_checkpoint, save_checkpoint_and_link_latest
+from common.ckpt import resolve_resume_path, load_checkpoint, save_checkpoint_and_link_latest, inspect_checkpoint
 from torch.utils.data import DataLoader
 from contextlib import nullcontext
 import model
@@ -76,6 +80,8 @@ def main():
     parser.add_argument("--auto-resume", action="store_true", default=False, help="Resume from the most recent checkpoint.")
     parser.add_argument("--generate-images", action="store_true", default=False, help="Generate sample images at each epoch.")
     parser.add_argument("--debug", action="store_true", default=False, help="Turn on debugging messages.")
+    parser.add_argument("--inspect-ckpt", type=str, default=None, help="Name of the checkpoint to inspect.")
+    parser.add_argument("--download-ckpt", action="store_true", default=False, help="Download checkpoints from Gdrive")
     args = parser.parse_args()
 
     #
@@ -84,6 +90,26 @@ def main():
     outdir = Path(args.outdir)
     log_dir = outdir / Path("logs") if args.logdir is None else Path(args.logdir)
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    #
+    # Download checkpoint
+    #
+    if args.download_ckpt:
+        print(f"{emoji.info} Downloading checkpoint: {CHECKPOINT_ID}" )
+        ckpt_dir = outdir / "checkpoints"
+        ckpt_dir.mkdir(exist_ok = True)
+        ckpt_path = ckpt_dir / "ae_model_weights.pth"    
+        gdown.download(id=CHECKPOINT_ID, output=str(ckpt_path), quiet=False)
+        print(f"{emoji.info} Checkpoint saved in: {ckpt_path}" )        
+        return error_codes.EXIT_OK
+
+    #
+    # Inspecting checkpoint
+    #
+    if args.inspect_ckpt:
+        print(f"{emoji.info} Inspecting checkpoint: {args.inspect_ckpt}" )
+        inspect_checkpoint(Path(args.inspect_ckpt))
+        return error_codes.EXIT_OK
 
     #
     # Resume logic - determine checkpoint path and experiment name

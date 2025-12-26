@@ -3,6 +3,9 @@
 # Automatically detects and loads the correct autoencoder (MLP or Conv) from checkpoint
 #
 
+# https://drive.google.com/file/d/1YKJnxlA19U34PTFSorOUIEHc1HFlpbk7/view?usp=sharing
+CHECKPOINT_ID="1YKJnxlA19U34PTFSorOUIEHc1HFlpbk7"
+
 from pathlib import Path
 import sys
 
@@ -141,6 +144,8 @@ def main():
     parser.add_argument("--auto-resume", action="store_true", default=False)
     parser.add_argument("--generate-images", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=False)
+    parser.add_argument("--inspect-ckpt", type=str, default=None, help="Name of the checkpoint to inspect.")
+    parser.add_argument("--download-ckpt", action="store_true", default=False, help="Download checkpoints from Gdrive")
     args = parser.parse_args()
 
     args.model = "lddpm"
@@ -151,6 +156,26 @@ def main():
     outdir = Path(args.outdir)
     log_dir = outdir / Path("logs") if args.logdir is None else Path(args.logdir)
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    #
+    # Download checkpoint
+    #
+    if args.download_ckpt:
+        print(f"{emoji.info} Downloading checkpoint: {CHECKPOINT_ID}" )
+        ckpt_dir = outdir / "checkpoints"
+        ckpt_dir.mkdir(exist_ok = True)
+        ckpt_path = ckpt_dir / "lldm_model_weights.pth"    
+        gdown.download(id=CHECKPOINT_ID, output=str(ckpt_path), quiet=False)
+        print(f"{emoji.info} Checkpoint saved in: {ckpt_path}" )        
+        return error_codes.EXIT_OK
+
+    #
+    # Inspecting checkpoint
+    #
+    if args.inspect_ckpt:
+        print(f"{emoji.info} Inspecting checkpoint: {args.inspect_ckpt}" )
+        inspect_checkpoint(Path(args.inspect_ckpt))
+        return error_codes.EXIT_OK
 
     #
     # Resume logic - determine checkpoint path and experiment name

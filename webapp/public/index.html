@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MNIST Latent Diffusion Generator</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>MNIST Latent Diffusion Generator</h1>
+            <p class="subtitle">Generate handwritten digits using trained diffusion models</p>
+        </header>
+
+        <div class="main-content">
+            <div class="control-panel">
+                <h2>Generation Settings</h2>
+
+                <div class="form-group">
+                    <label for="numImages">Number of Images:</label>
+                    <input type="number" id="numImages" min="1" max="100" value="16">
+                    <span class="hint">1-100 images</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="digit">Digit to Generate:</label>
+                    <select id="digit">
+                        <option value="">Random (All Digits)</option>
+                        <option value="0">0</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                        <option value="6">6</option>
+                        <option value="7">7</option>
+                        <option value="8">8</option>
+                        <option value="9">9</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="diffusionCkpt">Diffusion Checkpoint:</label>
+                    <input type="text" id="diffusionCkpt" placeholder="Path to diffusion checkpoint">
+                    <span class="hint">Leave empty to use latest or select from dropdown</span>
+                    <select id="diffusionCkptSelect" class="checkpoint-select">
+                        <option value="">-- Select checkpoint --</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="aeCkpt">Autoencoder Checkpoint:</label>
+                    <input type="text" id="aeCkpt" placeholder="Path to autoencoder checkpoint (optional)">
+                    <span class="hint">Auto-detected from diffusion checkpoint if not provided</span>
+                    <select id="aeCkptSelect" class="checkpoint-select">
+                        <option value="">-- Select checkpoint --</option>
+                    </select>
+                </div>
+
+                <button id="generateBtn" class="generate-btn">
+                    <span class="btn-text">Generate Images</span>
+                    <span class="btn-loader"></span>
+                </button>
+
+                <button id="refreshCheckpoints" class="refresh-btn">
+                    Refresh Checkpoints
+                </button>
+            </div>
+
+            <div class="output-panel">
+                <h2>Generated Images</h2>
+                <div id="status" class="status"></div>
+                <div id="imageContainer" class="image-container">
+                    <div class="placeholder">
+                        <svg width="100" height="100" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="10" y="10" width="80" height="80" rx="4" stroke="#ccc" stroke-width="2" fill="none"/>
+                            <path d="M30 50 L50 70 L70 30" stroke="#ccc" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        <p>Generated images will appear here</p>
+                    </div>
+                </div>
+
+                <div id="output" class="output-log"></div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Powered by PyTorch DDPM + Node.js</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
