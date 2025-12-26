@@ -12,6 +12,24 @@ const aeCkptInput = document.getElementById('aeCkpt');
 const diffusionCkptSelect = document.getElementById('diffusionCkptSelect');
 const aeCkptSelect = document.getElementById('aeCkptSelect');
 
+// Process visualization elements
+const visualizeProcessCheckbox = document.getElementById('visualizeProcess');
+const processStepsGroup = document.getElementById('processStepsGroup');
+const processStepsInput = document.getElementById('processSteps');
+const animationControls = document.getElementById('animationControls');
+const playPauseBtn = document.getElementById('playPauseBtn');
+const restartBtn = document.getElementById('restartBtn');
+const frameSlider = document.getElementById('frameSlider');
+const frameCounter = document.getElementById('frameCounter');
+const speedControl = document.getElementById('speedControl');
+const speedLabel = document.getElementById('speedLabel');
+
+// Animation state
+let animationFrames = [];
+let currentFrame = 0;
+let isPlaying = false;
+let animationInterval = null;
+
 // Load checkpoints on page load
 loadCheckpoints();
 
@@ -26,6 +44,34 @@ diffusionCkptSelect.addEventListener('change', (e) => {
 
 aeCkptSelect.addEventListener('change', (e) => {
     aeCkptInput.value = e.target.value;
+});
+
+// Process visualization checkbox
+visualizeProcessCheckbox.addEventListener('change', (e) => {
+    processStepsGroup.style.display = e.target.checked ? 'block' : 'none';
+    if (!e.target.checked) {
+        stopAnimation();
+        animationControls.style.display = 'none';
+    }
+});
+
+// Animation control event listeners
+playPauseBtn.addEventListener('click', togglePlayPause);
+restartBtn.addEventListener('click', restartAnimation);
+frameSlider.addEventListener('input', (e) => {
+    currentFrame = parseInt(e.target.value);
+    updateFrame();
+    if (isPlaying) {
+        stopAnimation();
+    }
+});
+speedControl.addEventListener('input', (e) => {
+    const fps = parseInt(e.target.value);
+    speedLabel.textContent = `${fps} FPS`;
+    if (isPlaying) {
+        stopAnimation();
+        startAnimation();
+    }
 });
 
 // Load available checkpoints
@@ -71,6 +117,8 @@ async function generateImages() {
     const digit = digitSelect.value === '' ? null : parseInt(digitSelect.value);
     const diffusionCkpt = diffusionCkptInput.value.trim() || null;
     const aeCkpt = aeCkptInput.value.trim() || null;
+    const visualizeProcess = visualizeProcessCheckbox.checked;
+    const processSteps = parseInt(processStepsInput.value);
 
     // Validation
     if (!diffusionCkpt) {
@@ -87,7 +135,9 @@ async function generateImages() {
     generateBtn.disabled = true;
     generateBtn.classList.add('loading');
 
-    // Clear previous image
+    // Clear previous image and stop any existing animation
+    stopAnimation();
+    animationControls.style.display = 'none';
     imageContainer.innerHTML = '<div class="placeholder"><p>Generating images...</p></div>';
 
     showStatus('Generating images... This may take a minute.', 'loading');
@@ -104,7 +154,9 @@ async function generateImages() {
                 numImages,
                 digit,
                 diffusionCkpt,
-                aeCkpt
+                aeCkpt,
+                visualizeProcess,
+                processSteps
             })
         });
 
@@ -114,21 +166,28 @@ async function generateImages() {
             throw new Error(data.error + (data.details ? '\n\n' + data.details : ''));
         }
 
-        // Display generated image
-        const img = document.createElement('img');
-        img.src = data.imageUrl + '?t=' + Date.now(); // Cache busting
-        img.alt = 'Generated MNIST digits';
-        img.onload = () => {
-            imageContainer.innerHTML = '';
-            imageContainer.appendChild(img);
-        };
-        img.onerror = () => {
-            showStatus('Failed to load generated image', 'error');
-        };
+        // Handle process visualization
+        if (data.type === 'process' && data.frames) {
+            await setupProcessVisualization(data.frames);
+            const digitMsg = digit !== null ? ` of digit ${digit}` : '';
+            showStatus(`Successfully generated ${numImages} images${digitMsg} with ${data.numSteps} denoising steps!`, 'success');
+        } else {
+            // Display standard generated image
+            const img = document.createElement('img');
+            img.src = data.imageUrl + '?t=' + Date.now(); // Cache busting
+            img.alt = 'Generated MNIST digits';
+            img.onload = () => {
+                imageContainer.innerHTML = '';
+                imageContainer.appendChild(img);
+            };
+            img.onerror = () => {
+                showStatus('Failed to load generated image', 'error');
+            };
 
-        // Show success message
-        const digitMsg = digit !== null ? ` of digit ${digit}` : '';
-        showStatus(`Successfully generated ${numImages} images${digitMsg}!`, 'success');
+            // Show success message
+            const digitMsg = digit !== null ? ` of digit ${digit}` : '';
+            showStatus(`Successfully generated ${numImages} images${digitMsg}!`, 'success');
+        }
 
         // Show output log
         if (data.output) {
@@ -344,4 +403,106 @@ function formatFileSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// ===== PROCESS VISUALIZATION =====
+
+async function setupProcessVisualization(frameUrls) {
+    // Preload all frames
+    animationFrames = [];
+    currentFrame = 0;
+    isPlaying = false;
+
+    imageContainer.innerHTML = '<div class="placeholder"><p>Loading frames...</p></div>';
+
+    // Preload images
+    const loadPromises = frameUrls.map((url, index) => {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+                animationFrames[index] = img;
+                resolve();
+            };
+            img.onerror = reject;
+            img.src = url + '?t=' + Date.now();
+        });
+    });
+
+    try {
+        await Promise.all(loadPromises);
+
+        // Setup slider
+        frameSlider.max = animationFrames.length - 1;
+        frameSlider.value = 0;
+
+        // Show first frame
+        updateFrame();
+
+        // Show animation controls
+        animationControls.style.display = 'block';
+
+        // Auto-start animation
+        startAnimation();
+    } catch (error) {
+        console.error('Error loading frames:', error);
+        showStatus('Failed to load animation frames', 'error');
+    }
+}
+
+function updateFrame() {
+    if (animationFrames.length === 0) return;
+
+    // Ensure frame is in bounds
+    currentFrame = Math.max(0, Math.min(currentFrame, animationFrames.length - 1));
+
+    // Update image
+    const img = animationFrames[currentFrame];
+    imageContainer.innerHTML = '';
+    imageContainer.appendChild(img.cloneNode());
+
+    // Update controls
+    frameSlider.value = currentFrame;
+    frameCounter.textContent = `Frame: ${currentFrame + 1} / ${animationFrames.length}`;
+}
+
+function startAnimation() {
+    if (animationFrames.length === 0) return;
+
+    isPlaying = true;
+    playPauseBtn.textContent = '⏸ Pause';
+
+    const fps = parseInt(speedControl.value);
+    const interval = 1000 / fps;
+
+    animationInterval = setInterval(() => {
+        currentFrame++;
+        if (currentFrame >= animationFrames.length) {
+            currentFrame = 0; // Loop
+        }
+        updateFrame();
+    }, interval);
+}
+
+function stopAnimation() {
+    isPlaying = false;
+    playPauseBtn.textContent = '▶ Play';
+
+    if (animationInterval) {
+        clearInterval(animationInterval);
+        animationInterval = null;
+    }
+}
+
+function togglePlayPause() {
+    if (isPlaying) {
+        stopAnimation();
+    } else {
+        startAnimation();
+    }
+}
+
+function restartAnimation() {
+    stopAnimation();
+    currentFrame = 0;
+    updateFrame();
 }

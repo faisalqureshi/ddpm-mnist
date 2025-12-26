@@ -536,6 +536,111 @@ footer {
     border-color: #ccc;
 }
 
+/* Animation Controls */
+.animation-controls {
+    background: #f8f9fa;
+    border: 2px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 20px;
+    margin-top: 20px;
+}
+
+.controls-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.controls-row:last-child {
+    margin-bottom: 0;
+}
+
+.controls-row label {
+    font-weight: 600;
+    color: #555;
+    min-width: 60px;
+}
+
+.control-btn {
+    padding: 10px 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.control-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.control-btn:active {
+    transform: translateY(0);
+}
+
+.frame-counter {
+    margin-left: auto;
+    font-weight: 600;
+    color: #667eea;
+    font-size: 14px;
+}
+
+.frame-slider,
+.speed-slider {
+    flex: 1;
+    height: 6px;
+    border-radius: 3px;
+    background: #e0e0e0;
+    outline: none;
+    -webkit-appearance: none;
+}
+
+.frame-slider::-webkit-slider-thumb,
+.speed-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.frame-slider::-webkit-slider-thumb:hover,
+.speed-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+}
+
+.frame-slider::-moz-range-thumb,
+.speed-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    cursor: pointer;
+    border: none;
+    transition: transform 0.2s;
+}
+
+.frame-slider::-moz-range-thumb:hover,
+.speed-slider::-moz-range-thumb:hover {
+    transform: scale(1.2);
+}
+
+#speedLabel {
+    min-width: 60px;
+    text-align: right;
+    font-weight: 600;
+    color: #555;
+    font-size: 14px;
+}
+
 @media (max-width: 968px) {
     .main-content {
         grid-template-columns: 1fr;
@@ -559,5 +664,14 @@ footer {
     .selected-path {
         margin-right: 0;
         text-align: center;
+    }
+
+    .controls-row {
+        flex-wrap: wrap;
+    }
+
+    .frame-counter {
+        margin-left: 0;
+        width: 100%;
     }
 }

@@ -41,6 +41,20 @@
                 </div>
 
                 <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="visualizeProcess">
+                        Visualize Denoising Process
+                    </label>
+                    <span class="hint">Show step-by-step denoising animation</span>
+                </div>
+
+                <div class="form-group" id="processStepsGroup" style="display: none;">
+                    <label for="processSteps">Animation Steps:</label>
+                    <input type="number" id="processSteps" min="5" max="50" value="20">
+                    <span class="hint">5-50 frames (more = smoother but slower)</span>
+                </div>
+
+                <div class="form-group">
                     <label for="diffusionCkpt">Diffusion Checkpoint:</label>
                     <div class="input-with-button">
                         <input type="text" id="diffusionCkpt" placeholder="Path to diffusion checkpoint">
@@ -84,6 +98,24 @@
                             <path d="M30 50 L50 70 L70 30" stroke="#ccc" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
                         <p>Generated images will appear here</p>
+                    </div>
+                </div>
+
+                <!-- Animation Controls (hidden by default) -->
+                <div id="animationControls" class="animation-controls" style="display: none;">
+                    <div class="controls-row">
+                        <button id="playPauseBtn" class="control-btn">▶ Play</button>
+                        <button id="restartBtn" class="control-btn">↺ Restart</button>
+                        <span id="frameCounter" class="frame-counter">Frame: 0 / 0</span>
+                    </div>
+                    <div class="controls-row">
+                        <label for="frameSlider">Frame:</label>
+                        <input type="range" id="frameSlider" min="0" max="0" value="0" class="frame-slider">
+                    </div>
+                    <div class="controls-row">
+                        <label for="speedControl">Speed:</label>
+                        <input type="range" id="speedControl" min="1" max="10" value="5" class="speed-slider">
+                        <span id="speedLabel">5 FPS</span>
                     </div>
                 </div>
 

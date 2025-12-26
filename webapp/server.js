@@ -27,10 +27,12 @@ app.post('/api/generate', async (req, res) => {
         numImages = 16,
         digit = null,
         diffusionCkpt = null,
-        aeCkpt = null
+        aeCkpt = null,
+        visualizeProcess = false,
+        processSteps = 20
     } = req.body;
 
-    console.log('Generation request:', { numImages, digit, diffusionCkpt, aeCkpt });
+    console.log('Generation request:', { numImages, digit, diffusionCkpt, aeCkpt, visualizeProcess, processSteps });
 
     // Validate inputs
     if (numImages < 1 || numImages > 100) {
@@ -68,6 +70,11 @@ app.post('/api/generate', async (req, res) => {
         args.push('--digit', digit.toString());
     }
 
+    if (visualizeProcess) {
+        args.push('--show-process');
+        args.push('--process-steps', processSteps.toString());
+    }
+
     console.log('Running Python command:', 'python', args.join(' '));
 
     // Spawn Python process
@@ -98,7 +105,38 @@ app.post('/api/generate', async (req, res) => {
             });
         }
 
-        // Check if file was created
+        // Check if process visualization was requested
+        if (visualizeProcess) {
+            // Parse PROCESS_RESULT JSON from stdout
+            const processResultMatch = stdout.match(/PROCESS_RESULT: (.+)/);
+            if (processResultMatch) {
+                try {
+                    const processResult = JSON.parse(processResultMatch[1]);
+
+                    // Convert absolute paths to relative URLs
+                    const frameUrls = processResult.frames.map(framePath => {
+                        const filename = path.basename(framePath);
+                        return `/generated/${filename}`;
+                    });
+
+                    return res.json({
+                        success: true,
+                        type: 'process',
+                        numSteps: processResult.num_steps,
+                        frames: frameUrls,
+                        output: stdout
+                    });
+                } catch (err) {
+                    console.error('Error parsing PROCESS_RESULT:', err);
+                    return res.status(500).json({
+                        error: 'Failed to parse process result',
+                        details: err.message
+                    });
+                }
+            }
+        }
+
+        // Check if file was created (standard generation)
         if (!fs.existsSync(outputPath)) {
             return res.status(500).json({
                 error: 'Image file was not created',
@@ -109,6 +147,7 @@ app.post('/api/generate', async (req, res) => {
         // Return success with image URL
         res.json({
             success: true,
+            type: 'standard',
             imageUrl: `/generated/${outputFile}`,
             output: stdout
         });

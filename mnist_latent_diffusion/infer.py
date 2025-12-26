@@ -6,9 +6,16 @@
 from pathlib import Path
 import sys
 
+# Add parent directory to path for common utilities
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import argparse
 import torch
+import logging
 from torchvision import utils as tvutils
+
+# Import common utilities
+from common.device import get_device
 
 # Import BOTH AE model modules
 import importlib.util
@@ -33,6 +40,7 @@ spec_local.loader.exec_module(local_model)
 LatentDenoiser = local_model.LatentDenoiser
 precompute_schedules = local_model.precompute_schedules
 generate_images = local_model.generate_images
+generate_images_with_process = local_model.generate_images_with_process
 
 def detect_ae_model_type(ae_ckpt_path: Path) -> str:
     """Detect autoencoder model type from checkpoint"""
@@ -69,10 +77,16 @@ def main():
     parser.add_argument("--digit", type=int, default=None, help="Generate specific digit (0-9), or None for all digits")
     parser.add_argument("--output", type=str, default="generated.png")
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--show-process", action="store_true", help="Show denoising process (only works with single digit and num-images=1)")
+    parser.add_argument("--process-steps", type=int, default=20, help="Number of intermediate steps to capture")
     args = parser.parse_args()
 
-    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
-    print(f"Using device: {device}")
+    # Setup simple logger for device detection
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
+    logger = logging.getLogger(__name__)
+
+    # Auto-detect device (CUDA > MPS > CPU)
+    device = get_device(logger, args.device)
 
     # Load diffusion checkpoint to extract architecture parameters
     print(f"Loading diffusion model from {args.ckpt}")
@@ -132,19 +146,58 @@ def main():
         labels = torch.arange(args.num_images, device=device) % 10
 
     with torch.no_grad():
-        imgs = generate_images(
-            net, decoder, sched,
-            n=args.num_images,
-            latent_dim=ae_latent_dim,
-            labels=labels,
-            device=device
-        ).cpu()
+        if args.show_process:
+            # Generate with intermediate steps
+            print(f"Generating with {args.process_steps} intermediate steps...")
+            intermediates = generate_images_with_process(
+                net, decoder, sched,
+                n=args.num_images,
+                latent_dim=ae_latent_dim,
+                labels=labels,
+                device=device,
+                num_steps=args.process_steps
+            ).cpu()  # Shape: (num_steps, n, 1, 28, 28)
 
-    # Save grid
-    nrow = int(args.num_images ** 0.5)
-    grid = tvutils.make_grid(imgs, nrow=nrow, padding=2)
-    tvutils.save_image(grid, args.output)
-    print(f"Saved to {args.output}")
+            # Save each intermediate frame
+            output_path = Path(args.output)
+            output_dir = output_path.parent
+            output_stem = output_path.stem
+            output_ext = output_path.suffix
+
+            frame_paths = []
+            nrow = int(args.num_images ** 0.5)
+
+            for step_idx in range(intermediates.shape[0]):
+                frame = intermediates[step_idx]  # (n, 1, 28, 28)
+                grid = tvutils.make_grid(frame, nrow=nrow, padding=2)
+                frame_path = output_dir / f"{output_stem}_frame_{step_idx:03d}{output_ext}"
+                tvutils.save_image(grid, str(frame_path))
+                frame_paths.append(str(frame_path))
+
+            # Output JSON for server to parse
+            import json
+            result = {
+                "type": "process",
+                "num_steps": args.process_steps,
+                "frames": frame_paths,
+                "final_image": frame_paths[-1]
+            }
+            print(f"PROCESS_RESULT: {json.dumps(result)}")
+        else:
+            # Standard generation
+            imgs = generate_images(
+                net, decoder, sched,
+                n=args.num_images,
+                latent_dim=ae_latent_dim,
+                labels=labels,
+                device=device
+            ).cpu()
+
+            # Save grid
+            nrow = int(args.num_images ** 0.5)
+            grid = tvutils.make_grid(imgs, nrow=nrow, padding=2)
+            tvutils.save_image(grid, args.output)
+            print(f"Saved to {args.output}")
 
 if __name__ == "__main__":
     main()

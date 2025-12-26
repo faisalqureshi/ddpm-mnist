@@ -225,3 +225,62 @@ def generate_images(model: nn.Module, decoder: nn.Module, sched: Dict[str, torch
 
     # Clamp to [0, 1] (decoder uses Sigmoid, so already in [0,1])
     return images.clamp(0, 1)
+
+@torch.no_grad()
+def generate_images_with_process(model: nn.Module, decoder: nn.Module, sched: Dict[str, torch.Tensor],
+                                 n: int = 1, latent_dim: int = 16,
+                                 labels: Optional[torch.Tensor] = None,
+                                 device: Optional[torch.device] = None,
+                                 num_steps: int = 20):
+    """
+    Generate images and capture intermediate denoising steps
+
+    model: latent diffusion model
+    decoder: autoencoder decoder
+    labels: (n,) class labels for conditional generation (optional)
+    num_steps: number of intermediate steps to capture (evenly spaced)
+    Returns: (num_steps, B, 1, 28, 28) sequence of images showing denoising process
+    """
+    model.eval()
+    decoder.eval()
+    device = device or next(model.parameters()).device
+
+    # Start from pure noise
+    z = torch.randn(n, latent_dim, device=device)
+
+    if labels is not None:
+        labels = labels.to(device)
+
+    beta = sched["beta"]
+    sqrt_alpha = sched["sqrt_alpha"]
+    sqrt_one_minus_abar = sched["sqrt_one_minus_abar"]
+    post_var = sched["posterior_var"]
+    T = beta.numel()
+
+    # Determine which timesteps to capture
+    capture_interval = max(1, T // num_steps)
+    capture_steps = list(range(T - 1, -1, -capture_interval))[:num_steps]
+    if 0 not in capture_steps:
+        capture_steps.append(0)
+    capture_steps = sorted(capture_steps, reverse=True)
+
+    intermediates = []
+
+    # Reverse diffusion with intermediate captures
+    for ti in reversed(range(T)):
+        t = torch.full((n,), ti, device=device, dtype=torch.long)
+        eps_hat = model(z, t, labels)
+        mean = (z - (beta[ti] / (sqrt_one_minus_abar[ti] + 1e-12)) * eps_hat) / (sqrt_alpha[ti] + 1e-12)
+
+        if ti > 0:
+            z = mean + torch.sqrt(post_var[ti]) * torch.randn_like(z)
+        else:
+            z = mean
+
+        # Capture intermediate latent and decode to image
+        if ti in capture_steps:
+            img = decoder(z).clamp(0, 1)
+            intermediates.append(img)
+
+    # Stack all intermediate images (num_steps, B, 1, 28, 28)
+    return torch.stack(intermediates[::-1])  # Reverse to go from noisy to clean
